@@ -1,2 +1,3 @@
 # grouped_aggregate
-Prototype next-generation grouped aggregation in SciDB
+
+Work in progress (aren't we all?)
