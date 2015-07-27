@@ -4,7 +4,10 @@
 #include <util/arena/Map.h>
 #include <util/arena/Vector.h>
 #include <util/Arena.h>
-
+#include <array/SortArray.h>
+#include <array/TupleArray.h>
+//#include <system/Exceptions.h>
+#include <boost/foreach.hpp>
 
 namespace scidb
 {
@@ -13,7 +16,10 @@ using scidb::arena::Options;
 using scidb::arena::ArenaPtr;
 using scidb::arena::newArena;
 using boost::dynamic_pointer_cast;
+using scidb::SortArray;
 
+//class SortArray;
+//class TupleComparator;
 
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.distinct"));
 
@@ -77,7 +83,6 @@ static void EXCEPTION_ASSERT(bool cond)
     }
 }
 
-
 class MemArrayAppender
 {
 private:
@@ -134,7 +139,8 @@ public:
        _aiters(_nAttrs),
        _citers(_nAttrs)
     {
-        EXCEPTION_ASSERT(memArray->getArrayDesc().getDimensions().size() == 1 &&
+
+    	EXCEPTION_ASSERT(memArray->getArrayDesc().getDimensions().size() == 1 &&
                          memArray->getArrayDesc().getDimensions()[0].getStartMin() == 0 &&
                          skipInterval % memArray->getArrayDesc().getDimensions()[0].getChunkInterval() == 0);
         for (AttributeID i = 0; i<_nAttrs; ++i)
@@ -151,6 +157,17 @@ public:
         _citers[1]->writeItem(v1);
         _citers[2]->writeItem(v2);
     }
+
+    void addValues(Value const& v0,uint64_t const& v1)
+     {
+         EXCEPTION_ASSERT(_nAttrs==2);
+         advance();
+
+         _citers[0]->writeItem(v0);
+         _buf.setUint64(v1);
+         _citers[1]->writeItem(_buf);
+
+     }
 
     void addValues(Value const& v0, uint64_t const v1, uint64_t const v2)
     {
@@ -187,14 +204,244 @@ public:
     }
 };
 
-class MemArrayBuilder
+
+class MergeMemArrayAppender
+{
+private:
+    shared_ptr<Query> const&           _query;
+    size_t const                       _nAttrs;
+    size_t const                       _chunkSize;
+    size_t const                       _startingChunk;
+    size_t const                       _skipInterval;
+    Coordinates                        _cellPos;
+    Coordinates                        _chunkPos;
+    Coordinate                         _chunkNumber;
+    vector<shared_ptr<ArrayIterator> > _aiters;
+    vector<shared_ptr<ChunkIterator> > _citers;
+    Value _buf;
+    Coordinate                         _lastBucketIdVal;
+
+    void advance(Coordinate bucketId, Coordinate senderInstance)
+    {
+
+          _cellPos[0] = bucketId;
+          _cellPos[1] = senderInstance;
+          _cellPos[2] = _chunkNumber;
+        ++_cellPos[3];
+
+	    //dims.push_back(DimensionDesc("value_id", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+        //dims.push_back(DimensionDesc("bucket_id", 0, MAX_COORDINATE, 1, 0));
+        //dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
+        //dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
+        //LOG4CXX_DEBUG(logger, "Cell0:" << _cellPos[0] << " ,Cell1: " <<_cellPos[1] <<",_lastval:" << (_lastVal ) <<"bucket:" << bucketId);
+        if ((_cellPos[3] % _chunkSize == 0) || (_cellPos[0] != _lastBucketIdVal) )
+        {
+
+        	if (_citers[0])
+            {
+                for(size_t i=0; i<_nAttrs; ++i)
+                {
+                    _citers[i]->flush();
+                }
+            }
+
+        	if (_cellPos[3] % _chunkSize == 0)
+        	   {
+        	        		_chunkNumber++;
+        	        		 _chunkPos[2] += 1;
+        	        		 _chunkPos[3] += _skipInterval;
+        	   }
+
+        	if(_cellPos[0] != _lastBucketIdVal)
+        	  {
+        		   _chunkPos[0] += 1;
+        	       _lastBucketIdVal =_cellPos[0];
+        	  }
+
+        	//_chunkPos[2] = 0;
+            //_chunkPos[3] = 0;
+
+            //LOG4CXX_DEBUG(logger, "Chunk0:" << _chunkPos[0] << " ,Chunk1: " <<_chunkPos[1] << ",Chunk2: " <<_chunkPos[2] << ",Chunk3: " <<_chunkPos[3]);
+            //LOG4CXX_DEBUG(logger, "Cell0:" << _cellPos[0] << " ,Cell1: " <<_cellPos[1] << ",Cell2: " <<_cellPos[2] << ",Cell3: " <<_cellPos[3]);
+            //LOG4CXX_DEBUG(logger, "FOO2.5: ");
+            _citers[0]=_aiters[0] ->newChunk(_chunkPos).getIterator(_query, ChunkIterator::SEQUENTIAL_WRITE);
+            for(size_t i=1; i<_nAttrs; ++i)
+            {
+                _citers[i] =_aiters[i] ->newChunk(_chunkPos).getIterator(_query, ChunkIterator::SEQUENTIAL_WRITE |
+                                                                                 ChunkIterator::NO_EMPTY_CHECK);
+            }
+            //LOG4CXX_DEBUG(logger, "FOO3: ");
+            //_cellPos[0] = _chunkPos[0];
+
+            _cellPos[0] = bucketId;
+            _cellPos[1] = senderInstance;
+            _cellPos[2] = _chunkNumber;
+            _cellPos[3] = _chunkPos[3];
+
+            //LOG4CXX_DEBUG(logger, "Cell0:" << _cellPos[0] << " ,Cell1: " <<_cellPos[1] << ",Cell2: " <<_cellPos[2] << ",Cell3: " <<_cellPos[3]);
+        }
+        //LOG4CXX_DEBUG(logger, "Cell0:" << _cellPos[0] << " ,Cell1: " <<_cellPos[1]);
+        for(size_t i=0; i<_nAttrs; ++i)
+        {
+            _citers[i] ->setPosition(_cellPos);
+        }
+        //LOG4CXX_DEBUG(logger, "FOO4: ");
+    }
+
+    void advance()
+    {
+        ++_cellPos[0];
+        //++ _cellPos[1];
+        //++_cellPos[2];
+        //++_cellPos[3];
+
+        if (_cellPos[0] % _chunkSize == 0)
+        {
+            if (_citers[0])
+            {
+                for(size_t i=0; i<_nAttrs; ++i)
+                {
+                    _citers[i]->flush();
+                }
+            }
+            _chunkPos[0] += _skipInterval;
+            _chunkPos[1] += 1;
+            _chunkPos[2] = 0;
+            _chunkPos[3] = 0;
+
+            //dims.push_back(DimensionDesc("value_id", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+            //dims.push_back(DimensionDesc("bucket_id", 0, MAX_COORDINATE, 1, 0));
+            //dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
+            //dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
+
+            LOG4CXX_DEBUG(logger, "FOO2.5: ");
+            _citers[0]=_aiters[0] ->newChunk(_chunkPos).getIterator(_query, ChunkIterator::SEQUENTIAL_WRITE);
+            for(size_t i=1; i<_nAttrs; ++i)
+            {
+                _citers[i] =_aiters[i] ->newChunk(_chunkPos).getIterator(_query, ChunkIterator::SEQUENTIAL_WRITE |
+                                                                                 ChunkIterator::NO_EMPTY_CHECK);
+            }
+            LOG4CXX_DEBUG(logger, "FOO3: ");
+            _cellPos[0] = _chunkPos[0];
+            _cellPos[1] = 0;
+            _cellPos[2] = 0;
+            _cellPos[3] = 0;
+        }
+        for(size_t i=0; i<_nAttrs; ++i)
+        {
+            _citers[i] ->setPosition(_cellPos);
+        }
+        //LOG4CXX_DEBUG(logger, "FOO4: ");
+    }
+
+public:
+    MergeMemArrayAppender(shared_ptr<MemArray> memArray,
+                     shared_ptr<Query> const& query,
+                     size_t startingChunk = 0,
+                     size_t skipInterval  = 1000000):
+       _query(query),
+       _nAttrs(memArray->getArrayDesc().getAttributes(true).size()),
+       _chunkSize(memArray->getArrayDesc().getDimensions()[0].getChunkInterval()),
+       _startingChunk(startingChunk),
+       _skipInterval(skipInterval),
+	   //_cellPos(2,startingChunk - 1),
+	   //_chunkPos(2,startingChunk - skipInterval),
+	   //_cellPos(2),
+	   //_chunkPos(2),
+	   _chunkNumber(0),
+	   _lastBucketIdVal(0),
+	   //_cellPos(1,startingChunk - 1),
+	   //_chunkPos(1,startingChunk - skipInterval),
+       _aiters(_nAttrs),
+       _citers(_nAttrs)
+    {
+
+    	//EXCEPTION_ASSERT(memArray->getArrayDesc().getDimensions().size() == 1 &&
+        //                 memArray->getArrayDesc().getDimensions()[0].getStartMin() == 0 &&
+        //                 skipInterval % memArray->getArrayDesc().getDimensions()[0].getChunkInterval() == 0);
+        for (AttributeID i = 0; i<_nAttrs; ++i)
+        {
+            _aiters[i] = memArray->getIterator(i);
+        }
+        _cellPos.push_back(0);
+        _cellPos.push_back(0);
+        _cellPos.push_back(0);
+        _cellPos.push_back(startingChunk - 1);
+
+        _chunkPos.push_back(0);
+        _chunkPos.push_back(0);
+        _chunkPos.push_back(0);
+        _chunkPos.push_back(startingChunk - skipInterval);
+
+}
+
+    void addValues(Value const& v0, Value const& v1, Value const& v2)
+    {
+        EXCEPTION_ASSERT(_nAttrs==3);
+        advance();
+        _citers[0]->writeItem(v0);
+        _citers[1]->writeItem(v1);
+        _citers[2]->writeItem(v2);
+    }
+
+    void addValues(Value const& v0, uint64_t const v1, uint64_t const v2)
+    {
+        EXCEPTION_ASSERT(_nAttrs==3);
+        advance();
+        _citers[0]->writeItem(v0);
+        _buf.setUint64(v1);
+        _citers[1]->writeItem(_buf);
+        _buf.setUint64(v2);
+        _citers[2]->writeItem(_buf);
+    }
+
+    void addValues( Value const& v0,uint64_t const v1,Coordinate bucketId,Coordinate senderInstance )
+      {
+          EXCEPTION_ASSERT(_nAttrs==2);
+
+	      advance(bucketId, senderInstance);
+
+          _citers[0]->writeItem(v0);
+          _buf.setUint64(v1);
+          _citers[1]->writeItem(_buf);
+
+
+      }
+
+    void addValues(Value const& v0)
+    {
+        EXCEPTION_ASSERT(_nAttrs==1);
+        advance();
+        _citers[0]->writeItem(v0);
+    }
+
+    void release()
+    {
+        if (_citers[0])
+        {
+            for(size_t i=0; i<_nAttrs; ++i)
+            {
+                _citers[i]->flush();
+                _citers[i].reset();
+            }
+        }
+        for(size_t i=0; i<_nAttrs; ++i)
+        {
+            _aiters[i].reset();
+        }
+    }
+};
+
+
+
+class MergeMemArrayBuilder
 {
 private:
     shared_ptr<MemArray>               _out;
-    MemArrayAppender                   _appender;
+    MergeMemArrayAppender              _appender;
 
 public:
-    MemArrayBuilder (ArrayDesc const& schema,
+    MergeMemArrayBuilder (ArrayDesc const& schema,
                      shared_ptr<Query> const& query,
                      size_t startingChunk = 0,
                      size_t skipInterval  = 1000000):
@@ -212,6 +459,11 @@ public:
         _appender.addValues(v0,v1,v2);
     }
 
+    void addValues( Value const& v0, uint64_t const v1, Coordinate bucketId, Coordinate senderInstance )
+     {
+           _appender.addValues(v0,v1, bucketId, senderInstance );
+     }
+
     void addValues(Value const& v0, uint64_t const v1, uint64_t const v2)
     {
         _appender.addValues(v0,v1,v2);
@@ -219,7 +471,8 @@ public:
 
     shared_ptr<MemArray> finalize()
     {
-        _appender.release();
+
+    	_appender.release();
         return _out;
     }
     shared_ptr<MemArray> finalizeNoFlush()
@@ -228,6 +481,67 @@ public:
     }
 
 };
+
+
+class MemArrayBuilder
+{
+private:
+    shared_ptr<MemArray>               _out;
+    MemArrayAppender                   _appender;
+
+public:
+    MemArrayBuilder (ArrayDesc const& schema,
+                     shared_ptr<Query> const& query,
+                     size_t startingChunk = 0,
+                     size_t skipInterval  = 1000000):
+        _out(new MemArray(schema, query)),
+        _appender(_out, query, startingChunk, skipInterval)
+    {}
+
+   /* MemArrayBuilder (ArrayDesc const& schema,
+                        shared_ptr<Query> const& query,
+                        size_t startingChunk = 0,
+                        size_t skipInterval  = 1000000,
+						shared_ptr<MemArray> inArray ):
+           _out(inArray),
+           _appender(_out, query, startingChunk, skipInterval)
+       {}
+   */
+
+    void addValues(Value const& v0)
+    {
+        _appender.addValues(v0);
+    }
+
+    void addValues(Value const& v0, Value const& v1, Value const& v2)
+    {
+        _appender.addValues(v0,v1,v2);
+    }
+
+    void addValues( Value const& v0, uint64_t const v1)
+     {
+           _appender.addValues(v0,v1);
+     }
+
+    void addValues(Value const& v0, uint64_t const v1, uint64_t const v2)
+    {
+        _appender.addValues(v0,v1,v2);
+    }
+
+    shared_ptr<MemArray> finalize()
+    {
+
+    	_appender.release();
+        return _out;
+    }
+    shared_ptr<MemArray> finalizeNoFlush()
+    {
+        return _out;
+    }
+
+};
+
+
 class ValueChain : private mgd::set<Value, AttributeComparator>
 {
 private:
@@ -247,10 +561,9 @@ public:
         super(arena.get(), comparator)
     {}
 
-   // ValueChain(super::allocator_type const& a, ValueChain const& c):
-   // ValueChain(super::allocator_type const& a, ValueChain c):
-   // 	super(a, c)
-   // {}
+    //ValueChain(super::allocator_type const& a, ValueChain const& c):
+    //	super(a, c)
+    //{}
 
     //ValueChain(mgd::set<Value, AttributeComparator>::allocator_type const& a, BOOST_RV_REF(ValueChain) c):
     //    super(a, c)
@@ -466,8 +779,41 @@ public:
             hashMod.setUint64(tableIter.getCurrentHashMod());
             output.addValues(tableItem, hash, hashMod);
         }
+
         return output.finalize();
     }
+
+    shared_ptr<MemArray> dumpToMergeArray(ArrayDesc const& schema, shared_ptr<Query> const& query, Coordinate nInstances , Coordinate myInstanceId)
+    {
+        MergeMemArrayBuilder output (schema, query);
+        Value tableItem, hashMod;
+        uint64_t hash;
+        for (const_iterator tableIter = getIterator(); !tableIter.end(); tableIter.next())
+        {
+            tableItem = tableIter.getCurrentItem();
+            hash      = tableIter.getCurrentHash();
+            size_t bucketId = hash % nInstances;
+            output.addValues(tableItem, hash, bucketId, myInstanceId);
+        }
+
+
+        return output.finalize();
+    }
+
+    shared_ptr<MemArray> appendToArray(ArrayDesc const& schema, shared_ptr<Query> const& query)
+    {
+        MemArrayBuilder output (schema, query);
+        Value tableItem, hash, hashMod;
+        for (const_iterator tableIter = getIterator(); !tableIter.end(); tableIter.next())
+        {
+            tableItem = tableIter.getCurrentItem();
+            hash.setUint64(tableIter.getCurrentHash());
+            hashMod.setUint64(tableIter.getCurrentHashMod());
+            output.addValues(tableItem, hash, hashMod);
+        }
+        return output.finalize();
+    }
+
     shared_ptr<MemArray> dumpToArrayNoFlush(ArrayDesc const& schema, shared_ptr<Query> const& query)
     {
         MemArrayBuilder output (schema, query);
@@ -486,6 +832,85 @@ public:
        {
            return size();
        }
+};
+
+class InputDouble
+{
+private:
+    shared_ptr <ConstArrayIterator> _valueAIter;
+    shared_ptr <ConstArrayIterator> _hashAIter;
+    shared_ptr <ConstChunkIterator> _valueCIter;
+    shared_ptr <ConstChunkIterator> _hashCIter;
+    bool _end;
+
+public:
+    InputDouble(shared_ptr<MemArray> & input):
+        _valueAIter  (input->getConstIterator(0)),
+        _hashAIter   (input->getConstIterator(1)),
+        _end  (false)
+    {
+        if(!_valueAIter->end())
+        {
+            _valueCIter   = _valueAIter->getChunk().getConstIterator();
+            _hashCIter     = _hashAIter->getChunk().getConstIterator();
+        }
+        else
+        {
+            _end = true;
+        }
+    }
+
+    virtual ~InputDouble()
+    {
+        unlink();
+    }
+
+    void next()
+    {
+        ++(*_valueCIter);
+        if (!_valueCIter->end())
+        {
+            ++(*_hashCIter);
+        }
+        else
+        {
+            ++(*_valueAIter);
+            if (_valueAIter->end())
+            {
+                _end = true;
+                return;
+            }
+            ++(*_hashAIter);
+            _valueCIter   = _valueAIter->getChunk().getConstIterator();
+            _hashCIter    = _hashAIter->getChunk().getConstIterator();
+        }
+    }
+
+    void getItems(Value& v, uint64_t& hash, uint64_t& hashMod)
+    {
+        v = _valueCIter->getItem();
+        hash = _hashCIter->getItem().getUint64();
+    }
+
+    Coordinates const& getPosition()
+    {
+        return _valueCIter->getPosition();
+    }
+
+    bool end()
+    {
+        return _end;
+    }
+
+    void unlink()
+    {
+        _valueCIter.reset();
+        _hashCIter.reset();
+
+        _valueAIter.reset();
+        _hashAIter.reset();
+
+    }
 };
 
 class InputTriplet
@@ -553,6 +978,11 @@ public:
         hash = _hashCIter->getItem().getUint64();
         hashMod = _hashModCIter->getItem().getUint64();
     }
+    void getItems(Value& v, uint64_t& hash)
+     {
+    	hash = _hashCIter->getItem().getUint64();
+    	v    = _valueCIter->getItem();
+     }
 
     Coordinates const& getPosition()
     {
@@ -657,107 +1087,320 @@ private:
     size_t const                   _pageSizeBytes;
     ArenaPtr const&                _parentArena;
     ArenaPtr                       _arena;
+    ArenaPtr                       _sortArena;
     AttributeDesc const&           _inputDesc;
     AttributeComparator            _comparator;
     shared_ptr<MemoryHashTable>    _memData;
     vector< shared_ptr<MemArray> > _spilledParts;
     shared_ptr <Query> const&      _query;
+    shared_ptr<MemArrayBuilder>    _spill;
+    shared_ptr<MemArray>           _sortedArray;
+    //shared_ptr<MemArray>           _finalSpill;
+    shared_ptr<MergeMemArrayBuilder>    _finalSpill;
 
 public:
-    SpillingHashCollector(size_t const memLimitBytes,  ArenaPtr const& parentArena, AttributeDesc const& inputDesc,
+    SpillingHashCollector(size_t const memLimitBytes,  ArenaPtr const& parentArena,ArrayDesc const& inputArrayDesc, AttributeDesc const& inputDesc,
                           shared_ptr<Query> const& query):
         _memoryLimitBytes(memLimitBytes),
         _pageSizeBytes(1*MB),
         _parentArena(parentArena),
-        _arena(newArena(Options("").resetting(true).pagesize(_pageSizeBytes).parent(_parentArena))),
-        _inputDesc(inputDesc),
+		_arena(newArena(Options("").resetting(true).pagesize(_pageSizeBytes).parent(_parentArena))),
+		_inputDesc(inputDesc),
         _comparator(_inputDesc.getType()),
         _memData(new MemoryHashTable(_comparator, _arena)),
-        _query(query)
+		_query(query),
+        //_overflow( new MemArrayBuilder(inputArrayDesc, query))
+        _spill( new MemArrayBuilder(getSpillMemArrayDesc(), _query)),
+        // _finalSpill(new MemArray(getMergeArrayDesc(), _query))
+        _finalSpill(new MergeMemArrayBuilder(getMergeArrayDesc(), _query))
+
+         //MemArrayBuilder output (schema, query);
     {}
 
     void insert(Value const& v)
     {
-        _memData->insert(v);
-        //We don't need to spill yet and this will be redefined as it is not efficient - JR
-        /*if (_memData->usedBytes() >= _memoryLimitBytes)
-        {
-            LOG4CXX_DEBUG(logger, "Spilling part with "<<_memData->size()<<" values "<<_memData->usedBytes()<<" bytes into bucket "<<_spilledParts.size());
-            shared_ptr <MemArray> spill = _memData->dumpToArray(getArrayDesc(), _query);
-            _memData.reset();
-            _arena = newArena(Options("").resetting(true).pagesize(_pageSizeBytes).parent(_parentArena));
-            _memData.reset(new MemoryHashTable(_comparator, _arena));
-            _spilledParts.push_back(spill);
-        }
-        */
-    }
 
-    shared_ptr <MemArray> finalize()
-    {
+    	//_overflow->addValues(v);
+    	if (_memData->usedBytes() <= _memoryLimitBytes)
+    	{
+    		_memData->insert(v);
+    	}
+    	else
+        {
+           // LOG4CXX_DEBUG(logger, "Spilling part with "<<_memData->size()<<" values "<<_memData->usedBytes()<<" bytes into bucket "<<_spilledParts.size());
+            //shared_ptr <MemArray> spill = _memData->dumpToArray(getArrayDesc(), _query);
+            //_memData.reset();
+            //_arena = newArena(Options("").resetting(true).pagesize(_pageSizeBytes).parent(_parentArena));
+            //_memData.reset(new MemoryHashTable(_comparator, _arena));
+            //_spilledParts.push_back(spill);
 
-    	/*if (_spilledParts.size() == 0 && _memData->empty())
-        {
-            return shared_ptr<MemArray> (new MemArray(getArrayDesc(), _query));
-        }
-        if (!_memData->empty())// if the memData is not empty, dump to disk?? JR
-        {
-            shared_ptr <MemArray> spill = _memData->dumpToArray(getArrayDesc(), _query);
-            _memData.reset();
-            _arena.reset();
-            _spilledParts.push_back(spill);
-        }
-        size_t numParts = _spilledParts.size();
-        while (numParts > 1)
-        {
-            vector< shared_ptr<MemArray> > newParts;
-            shared_ptr <MemArray> left;
-            for(size_t i=0; i<numParts; ++i)
+            /*Value tableItem, hash, hashMod;
+            for (MemoryHashTable::const_iterator tableIter = _memData->getIterator(); !tableIter.end(); tableIter.next())
             {
-                shared_ptr<MemArray> part = _spilledParts[i];
-                if(!left)
-                {
-                    left = part;
-                    if (i == numParts - 1)
-                    {
-                        newParts.push_back(left);
-                    }
-                }
-                else
-                {
-                    LOG4CXX_DEBUG(logger, "Merging buckets "<<i-1<<" and "<<i<<" into "<<newParts.size());
-                    newParts.push_back(HashTableMerger::merge(_query, left, part));
-                    left.reset();
-                }
+            	tableItem = tableIter.getCurrentItem();
+            	hash.setUint64(tableIter.getCurrentHash());
+            	hashMod.setUint64(tableIter.getCurrentHashMod());
+            	_overflow->addValues(tableItem, hash, hashMod);
             }
-            numParts = newParts.size();
-            _spilledParts = newParts;
+            */
+    		size_t const nInstances = _query->getInstancesCount();
+    		uint64_t key = hashValue(v);
+            size_t bucketId = key % nInstances;
+            _spill->addValues(v,key,bucketId);
+
+            //_spill->addValues(v);
         }
-        shared_ptr <MemArray> result = _spilledParts[0];
-        _spilledParts.clear();
-        */
-
-
-    	shared_ptr <MemArray> result  = _memData->dumpToArray(getArrayDesc(), _query);// Added to bypass the spilling for now - JR
-    	//shared_ptr <MemArray> result  = _memData->dumpToArrayNoFlush(getArrayDesc(), _query);
-    	//shared_ptr <MemArray> result;
-    	return result;
 
     }
+
+    Value& genRandomValue(TypeId const& type, Value& value, int percentNull, int nullReason)
+       {
+           assert(percentNull>=0 && percentNull<=100);
+
+           if (percentNull>0 && rand()%100<percentNull) {
+               value.setNull(nullReason);
+           } else if (type==TID_INT64) {
+               value.setInt64(rand());
+           } else if (type==TID_BOOL) {
+               value.setBool(rand()%100<50);
+           } else if (type==TID_STRING) {
+               vector<char> str;
+               const size_t maxLength = 300;
+               const size_t minLength = 1;
+               assert(minLength>0);
+               size_t length = rand()%(maxLength-minLength) + minLength;
+               str.resize(length + 1);
+               for (size_t i=0; i<length; ++i) {
+                   int c;
+                   do {
+                       c = rand()%128;
+                   } while (! isalnum(c));
+                   str[i] = (char)c;
+               }
+               str[length-1] = 0;
+               value.setString(&str[0]);
+           } else {
+               throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_UNITTEST_FAILED)
+                   << "UnitTestSortArrayPhysical" << "genRandomValue";
+           }
+           return value;
+       }
+
+    typedef map<Coordinate, Value> CoordValueMap;
+    typedef std::pair<Coordinate, Value> CoordValueMapEntry;
+
+    void insertMapDataIntoArray(shared_ptr<Query>& query, MemArray& array, CoordValueMap const& m)
+    {
+        Coordinates coord(1);
+        coord[0] = 0;
+        vector< shared_ptr<ArrayIterator> > arrayIters(array.getArrayDesc().getAttributes(true).size());
+        vector< shared_ptr<ChunkIterator> > chunkIters(arrayIters.size());
+
+        for (size_t i = 0; i < arrayIters.size(); i++)
+        {
+            arrayIters[i] = array.getIterator(i);
+            chunkIters[i] =
+                ((MemChunk&)arrayIters[i]->newChunk(coord)).getIterator(query,
+                                                                        ChunkIterator::SEQUENTIAL_WRITE);
+        }
+
+        BOOST_FOREACH(CoordValueMapEntry const& p, m) {
+            coord[0] = p.first;
+            for (size_t i = 0; i < chunkIters.size(); i++)
+            {
+                if (!chunkIters[i]->setPosition(coord))
+                {
+                    chunkIters[i]->flush();
+                    chunkIters[i].reset();
+                    chunkIters[i] =
+                        ((MemChunk&)arrayIters[i]->newChunk(coord)).getIterator(query,
+                                                                                ChunkIterator::SEQUENTIAL_WRITE);
+                    chunkIters[i]->setPosition(coord);
+                }
+                chunkIters[i]->writeItem(p.second);
+            }
+        }
+
+        for (size_t i = 0; i < chunkIters.size(); i++)
+        {
+            chunkIters[i]->flush();
+        }
+    }
+
+    shared_ptr <MemArray> finalizeSort()
+
+    {
+    	        // Need to sort on <key, value>[i]
+    	        LOG4CXX_DEBUG(logger, "Entering the sort of the spill data");
+
+                // Sort Keys
+    	        SortingAttributeInfos sortingAttributeInfos;
+    	        SortingAttributeInfo  k;
+    	        //k.columnNo = 0;
+    	        //k.ascent = true;
+    	        //sortingAttributeInfos.push_back(k);
+    	        k.columnNo = 2;
+    	        k.ascent = true;
+    	        sortingAttributeInfos.push_back(k);
+
+    	        shared_ptr<MemArray> arrayInst = _spill->finalize();
+
+    	        shared_ptr<Array> baseArrayInst = static_pointer_cast<MemArray, Array>(arrayInst);
+                boost::shared_ptr<Query> query = _query;
+                ArrayDesc schema = getSpillMemArrayDesc();
+
+                // Sort
+    	        const bool preservePositions = false;
+    	        SortArray sorter(schema, _arena, preservePositions);
+
+    	        shared_ptr<TupleComparator> tcomp(new TupleComparator(sortingAttributeInfos, schema));
+
+    	        //PhysicalOperator::dumpArrayToLog(baseArrayInst, logger);
+    	        _sortedArray = sorter.getSortedArray(baseArrayInst, _query, tcomp);
+    	        //PhysicalOperator::dumpArrayToLog(baseArrayInst, logger);
+    	        //PhysicalOperator::dumpArrayToLog(_sortedArray, logger);
+
+    	    	//shared_ptr<MemArray> finalizedSort( new MemArray(getMergeArrayDesc(), _query));
+    	        size_t const nInstances = _query->getInstancesCount();
+    	        InstanceID const myInstanceId = _query->getInstanceID();
+
+    	        LOG4CXX_DEBUG(logger, "Appending FOO1: ");
+    	        // MergeMemArrayAppender appenderFinal =MergeMemArrayAppender(_finalSpill,query, -1 ,1000000 );
+    	        vector <shared_ptr<MergeMemArrayAppender> > appenders(1);
+    	        //appenders[0].reset(new MergeMemArrayAppender(_finalSpill, _query,0,1000000));
+    	        //appenders[i].reset(new MemArrayAppender(output, _query, startingChunk, skipInterval));
+    	        InputTriplet inputReader(_sortedArray);
+    	        Value val;
+    	        uint64_t hash, hashMod, bucketId;
+
+    	       // inputReader.getItems(hash, v);
+    	       //size_t destinationInstance = hash % nInstances;
+    	       //PhysicalOperator::dumpArrayToLog(_sortedArray, logger);
+    	       string ref="";
+
+    	       //decompress the data.
+    	       while(!inputReader.end())
+    	        {
+    	            inputReader.getItems(val,hash,bucketId);
+    	            string(val.getString());
+
+    	            if(strcmp(ref.c_str(),string(val.getString()).c_str() )!=0)
+    	              {
+    	                ref = string(val.getString());
+    	                //uniqueVals++;
+    	                //add the data to a new array specified for merging.
+    	                _finalSpill->addValues(val,hash,bucketId,myInstanceId);
+    	              }
+    	         inputReader.next();
+    	        }
+
+    	       LOG4CXX_DEBUG(logger, "Finished decompressing data: ");
+
+    	       //appenders[0]->release();
+    	       shared_ptr<MemArray> out = _finalSpill->finalize();
+
+    	       //PhysicalOperator::dumpArrayToLog(out, logger);
+    	       LOG4CXX_DEBUG(logger, "After Dump Array: ");
+    	        //appenders[0]->release();
+
+    	        //inputReader.unlink();
+    	        //finalizedArray.reset();
+
+    	        return out;
+
+    	        /*
+    	        shared_ptr<ConstArrayIterator> memArrayIter(outputMemArray->getConstIterator(0));  //everyone has an attribute 0! Even the strangest arrays...
+    	                shared_ptr<ConstChunkIterator> memChunkIter;
+
+    	                size_t numMemChunks = 0;
+    	                size_t numMemCells  = 0;
+    	                size_t uniqueVals   = 0;
+
+    	                string ref="";
+    	                while (!memArrayIter->end())
+    	                {
+    	                    ++numMemChunks;
+    	                    memChunkIter = memArrayIter->getChunk().getConstIterator();
+    	                    while(! memChunkIter->end())
+    	                    {
+
+    	                    	Value const& val = memChunkIter->getItem();
+
+    	                    	string(val.getString());
+
+    	                    	if(strcmp(ref.c_str(),string(val.getString()).c_str() )!=0)
+    	                    	{
+
+    	                    		ref=string(val.getString());
+    	                    		uniqueVals++;
+    	                    	}
+
+    	                    	++numMemCells;
+    	                        ++(*memChunkIter);
+    	                    }
+    	                    ++(*memArrayIter);
+    	                }
+*/
+
+    	        //return _sortedArray;
+    }
+
+
+    shared_ptr <MemArray> finalizeHash()
+      {
+
+    	size_t const nInstances = _query->getInstancesCount();
+    	InstanceID const myInstanceId = _query->getInstanceID();
+
+    	shared_ptr <MemArray> finalizedHash = _memData->dumpToMergeArray(getMergeArrayDesc(), _query, nInstances, myInstanceId);
+
+    	return finalizedHash;
+    	//shared_ptr<MemArray> dumpToMergeArray(ArrayDesc const& schema, shared_ptr<Query> const& query, Coordinate bucketId, Coordinate myInstanceId)
+      }
+
     size_t returnSize()
     {
-
     	size_t result = _memData->size();
 		return result;
-
     }
 
     size_t releaseMemory()
       {
-
     	 _memData.reset();
-
-
       }
+
+    ArrayDesc getMergeArrayDesc()
+       {
+           Attributes attrs;
+           attrs.push_back(AttributeDesc(0,
+                                         _inputDesc.getName(),
+                                         _inputDesc.getType(),
+                                         0,  //no longer nullable!
+                                         _inputDesc.getDefaultCompressionMethod(),
+                                         _inputDesc.getAliases(),
+                                         _inputDesc.getReserve(),
+                                         &(_inputDesc.getDefaultValue()),
+                                         _inputDesc.getDefaultValueExpr(),
+                                         _inputDesc.getVarSize()));
+
+           attrs.push_back(AttributeDesc(1, "key",    TID_UINT64, 0, 0));
+           //attrs.push_back(AttributeDesc(1, "value",    TID_UINT64, 0, 0));
+           attrs = addEmptyTagAttribute(attrs);
+           // param name dimension name
+           // start dimension start
+           // param end dimension end
+           // chunkInterval chunk size in this dimension
+           // chunkOverlap chunk overlay in this dimension
+
+           Dimensions dims;
+           dims.push_back(DimensionDesc("bucket_id", 0, MAX_COORDINATE, 1, 0));
+           //dims.push_back(DimensionDesc("instance_id", 0, MAX_COORDINATE, 1, 0));
+           dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
+           dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
+           dims.push_back(DimensionDesc("value_id", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+
+           return ArrayDesc("mergearr", attrs, dims);
+       }
 
     ArrayDesc getArrayDesc()
     {
@@ -780,6 +1423,38 @@ public:
         return ArrayDesc("arr", attrs, dims);
     }
 
+    ArrayDesc getSpillMemArrayDesc()
+    {
+        Attributes attrs;
+
+        attrs.push_back(AttributeDesc(0,
+                                      _inputDesc.getName(),
+                                      _inputDesc.getType(),
+                                      0,  //no longer nullable!
+                                      _inputDesc.getDefaultCompressionMethod(),
+                                      _inputDesc.getAliases(),
+                                      _inputDesc.getReserve(),
+                                      &(_inputDesc.getDefaultValue()),
+                                      _inputDesc.getDefaultValueExpr(),
+                                      _inputDesc.getVarSize()));
+
+        //attrs.push_back(AttributeDesc(0, "key",    TID_STRING, 0, 0));
+        attrs.push_back(AttributeDesc(1, "key",  TID_UINT64, 0, 0));
+        attrs.push_back(AttributeDesc(2, "bucketid",  TID_UINT64, 0, 0));
+        attrs = addEmptyTagAttribute(attrs);
+        Dimensions dims;
+
+        dims.push_back(DimensionDesc("ii", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+/*
+        dims.push_back(DimensionDesc("id_number", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+        dims.push_back(DimensionDesc("bucket_id", 0, MAX_COORDINATE, 1, 0));
+        dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
+        dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
+*/
+
+        return ArrayDesc("spillarr", attrs, dims);
+    }
+
     static void senderToChunk (InstanceID const senderInstanceId,
                                InstanceID const targetInstanceId,
                                size_t const nInstances,
@@ -787,7 +1462,7 @@ public:
                                size_t& skipInterval,
                                size_t const chunkSize = 1000000)
     {
-        skipInterval = nInstances * nInstances * chunkSize;
+        skipInterval =  nInstances * chunkSize;
         startingChunk = nInstances * chunkSize * senderInstanceId + targetInstanceId * chunkSize;
         LOG4CXX_DEBUG(logger, "Sender "<<senderInstanceId<<" target "<<targetInstanceId << " startingChunk "<<startingChunk << " skipInterval "<<skipInterval);
     }
@@ -800,6 +1475,94 @@ public:
     {
         senderInstanceId = ((chunkPos - chunkSize * myInstanceId) / (nInstances * chunkSize));
     }
+
+
+    shared_ptr <MemArray> finalizeMerge(shared_ptr <MemArray>& hashArray, shared_ptr <MemArray>& overflowArray, ArrayDesc const& opSchema)
+    {
+
+    	//vector< boost::shared_ptr<Array> >& inputArrays, boost::shared_ptr<Query> query
+    	//assert(inputArrays.size() >= 2);
+    	//        return boost::shared_ptr<Array>(new MergeArray(_schema, inputArrays));
+
+    	LOG4CXX_DEBUG(logger, "finalizeMerge Begin: ");
+    	shared_ptr<MemArray> output( new MemArray(getMergeArrayDesc(), _query));
+        size_t const nInstances = _query->getInstancesCount();
+        InstanceID const myInstanceId = _query->getInstanceID();
+        vector <shared_ptr<MergeMemArrayAppender> > appenders(1);
+
+        size_t startingChunk;
+        size_t skipInterval;
+            //senderToChunk(myInstanceId, i, nInstances, startingChunk, skipInterval);
+        appenders[0].reset(new MergeMemArrayAppender(output, _query));
+
+        //LOG4CXX_DEBUG(logger, "FOO1: ");
+
+        Value val;
+        uint64_t hash, hashMod,bucketId;
+
+        InputTriplet inputReaderOverflow(overflowArray);
+        LOG4CXX_DEBUG(logger, "InputTriplet inputReaderOverflow(overflowArray);");
+        while(!inputReaderOverflow.end())
+        {
+
+        	LOG4CXX_DEBUG(logger, "1111111111111 ");
+        	inputReaderOverflow.getItems(val,hash,bucketId);
+        	LOG4CXX_DEBUG(logger, "222222222222 ");
+        	appenders[0]->addValues(val,hash,bucketId,myInstanceId);
+        	LOG4CXX_DEBUG(logger, "33333333333 ");
+        	inputReaderOverflow.next();
+        }
+
+        LOG4CXX_DEBUG(logger, " InputTriplet inputReaderHash(hashArray); ");
+
+        InputTriplet inputReaderHash(hashArray);
+
+        while(!inputReaderHash.end())
+         {
+
+             inputReaderHash.getItems(val,hash,bucketId);
+             //appenders[0]->addValues(val,hash,bucketId,myInstanceId);
+             inputReaderHash.next();
+         }
+        LOG4CXX_DEBUG(logger, " InputTriplet inputReaderHash(hashArray);Out of loop ");
+
+        return output;
+        /*
+        appenders[0]->release();
+
+
+
+        inputReaderHash.unlink();
+        appenders.clear();
+        appenders[0].reset(new MergeMemArrayAppender(output, _query));
+        //finalizedArray.reset();
+
+        output = dynamic_pointer_cast<MemArray>(redistribute(output, _query, psByRow));
+
+
+        PhysicalOperator::dumpArrayToLog(output, logger);
+        LOG4CXX_DEBUG(logger, "Finished redistributing: ");
+
+        InputTriplet inputReaderOutput(output);
+
+        while(!inputReaderOutput.end())
+             {
+                   inputReaderOutput.getItems(val,hash,bucketId);
+                   appenders[0]->addValues(val,hash,bucketId,myInstanceId);
+                   inputReaderOutput.next();
+              }
+
+               appenders[0]->release();
+
+               inputReaderOutput.unlink();
+               appenders.clear();
+*/
+
+    }
+
+
+
+
 
     shared_ptr <MemArray> makeExchangeArray(shared_ptr <MemArray>& finalizedArray, ArrayDesc const& opSchema)
     {

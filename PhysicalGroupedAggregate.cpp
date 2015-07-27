@@ -14,8 +14,25 @@
 */
 
 
+#include <query/Operator.h>
+#include <array/Metadata.h>
+#include <system/Cluster.h>
+#include <query/Query.h>
+#include <boost/make_shared.hpp>
+#include <boost/foreach.hpp>
+#include <system/Exceptions.h>
+#include <system/Utils.h>
+#include <log4cxx/logger.h>
+#include <util/NetworkMessage.h>
+#include <array/RLE.h>
+#include <array/SortArray.h>
+
+using namespace boost;
+using namespace std;
+
 #include "query/Operator.h"
 #include "HashTableUtilities.h"
+#include <array/SortArray.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -26,6 +43,10 @@ namespace scidb
 
 class PhysicalGroupedAggregate : public PhysicalOperator
 {
+
+	 typedef map<Coordinate, Value> CoordValueMap;
+	 typedef std::pair<Coordinate, Value> CoordValueMapEntry;
+
 public:
     PhysicalGroupedAggregate(string const& logicalName,
                              string const& physicalName,
@@ -45,19 +66,23 @@ public:
         return true;
     }
 
+
+    #define MB 1000000
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
         shared_ptr<Array> inputArray = inputArrays[0];
         shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));  //everyone has an attribute 0! Even the strangest arrays...
         shared_ptr<ConstChunkIterator> chunkIter;
+
         size_t numChunks = 0;
         size_t numCells  = 0;
 
         ArrayDesc const& inputDesc = inputArray->getArrayDesc();
-        //SpillingHashCollector collector(256*MB, this->_arena, inputDesc.getAttributes()[0], query);
+        //256*MB
+        SpillingHashCollector collector(10*MB, _arena, inputDesc, inputDesc.getAttributes()[0], query);
 
-        AttributeComparator comparator(inputDesc.getAttributes()[0].getType());
-        MemoryHashTable memData(comparator, this->_arena);
+        //AttributeComparator comparator(inputDesc.getAttributes()[0].getType());
+        //MemoryHashTable memData(comparator, this->_arena);
 
         while (!arrayIter->end())
         {
@@ -66,15 +91,67 @@ public:
             while(! chunkIter->end())
             {
                 ++numCells;
-                //collector.insert(chunkIter->getItem());
-                memData.insert(chunkIter->getItem());
+                collector.insert(chunkIter->getItem());
+                //memData.insert(chunkIter->getItem());
                 ++(*chunkIter);
             }
             ++(*arrayIter);
         }
+       // shared_ptr<MemArray> collector.finalizeNoFlush()
 
-        //shared_ptr<Array> outputArray =  collector.finalizeArray();
 
+        //collector.finalize();
+        shared_ptr<MemArray> outputMemArray =  collector.finalizeSort();
+        //PhysicalOperator::dumpArrayToLog(outputMemArray, logger);
+        LOG4CXX_DEBUG(logger, "finalizeSort Completed: ");
+
+        shared_ptr<MemArray> outputMemArrayHash =  collector.finalizeHash();
+
+        LOG4CXX_DEBUG(logger, "finalizeHash Completed: ");
+
+        ArrayDesc  opSchema;
+
+        shared_ptr <MemArray> uniqArray = collector.finalizeMerge(outputMemArrayHash, outputMemArray, opSchema);
+
+
+        //outputMemArray->
+        //PhysicalOperator::dumpArrayToLog(outputMemArray, logger);
+/*
+        shared_ptr<ConstArrayIterator> memArrayIter(outputMemArray->getConstIterator(0));  //everyone has an attribute 0! Even the strangest arrays...
+        shared_ptr<ConstChunkIterator> memChunkIter;
+
+        size_t numMemChunks = 0;
+        size_t numMemCells  = 0;
+        size_t uniqueVals   = 0;
+
+        string ref="";
+        while (!memArrayIter->end())
+        {
+            ++numMemChunks;
+            memChunkIter = memArrayIter->getChunk().getConstIterator();
+            while(! memChunkIter->end())
+            {
+
+            	Value const& val = memChunkIter->getItem();
+
+            	string(val.getString());
+
+            	if(strcmp(ref.c_str(),string(val.getString()).c_str() )!=0)
+            	{
+
+            		ref=string(val.getString());
+            		uniqueVals++;
+            	}
+
+            	++numMemCells;
+                ++(*memChunkIter);
+            }
+            ++(*memArrayIter);
+        }
+*/
+
+
+        //finalizeSort(query);
 
         //shared_ptr<Array> outputArray(out);
         //shared_ptr<ArrayIterator> outputArrayIter = outputArray->getIterator(0);
@@ -103,6 +180,7 @@ public:
 
 
         shared_ptr<Array> outputArray(new MemArray(_schema, query));
+
         shared_ptr<ArrayIterator> outputArrayIter = outputArray->getIterator(0);
         Coordinates position(1, query->getInstanceID());
         shared_ptr<ChunkIterator> outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE);
@@ -122,10 +200,12 @@ public:
         outputArrayIter = outputArray->getIterator(2);
         outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
         outputChunkIter->setPosition(position);
-        //value.setUint64(collector.returnSize());
-        value.setUint64(memData.size());
+        value.setUint64(numCells);
         outputChunkIter->writeItem(value);
         outputChunkIter->flush();
+
+
+
 
 
         //shared_ptr<MemArray> outfoo = collector.finalize();
