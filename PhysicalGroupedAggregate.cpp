@@ -101,19 +101,40 @@ public:
 
 
         //finalize the overflow array
-        //this has been sorteed and decompressed.
+        //this has been sorted and decompressed. This will be the merge schema below.
         shared_ptr<MemArray> outputMemArray =  collector.finalizeSort();
         //PhysicalOperator::dumpArrayToLog(outputMemArray, logger);
         LOG4CXX_DEBUG(logger, "finalizeSort Completed: ");
 
-        //finalize the hash collector
+        //finalize the hash collector This has a schema such as the below.
+        //AttributeDesc(0, <<- this should be value? TODO:check on this...
+        //attrs.push_back(AttributeDesc(1, "key",    TID_UINT64, 0, 0));
+        //dims.push_back(DimensionDesc("bucket_id", 0, MAX_COORDINATE, 1, 0));
+        //dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
+        //dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
+        //dims.push_back(DimensionDesc("value_id", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+
+
         shared_ptr<MemArray> outputMemArrayHash =  collector.finalizeHash();
         LOG4CXX_DEBUG(logger, "finalizeHash Completed: ");
 
         ArrayDesc  opSchema;
-        //merge the large hash table and the overfloq array
+        //merge the large hash table and the overflow array which are in the merge array schema
+        //The values with the same bucket_id need to get redistributed by column(dim2) to same instance and then decompression occurs.
         shared_ptr <MemArray> uniqArray = collector.finalizeMerge(outputMemArrayHash, outputMemArray, opSchema);
 
+
+        /*
+         Add the sg / merge capability. Expand the operator to return all the distinct values for
+        the input attribute (a 1D output array). Test the performance against existing redimension,
+        sort and unique on single-attribute inputs. Make sure we're delivering a significant
+		performance improvement against those solutions before proceeding.
+		Re-evaluate priorities as necessary.
+        */
+        /* Add the aggregate capability. Expand the operator to accept a 2-attribute array,
+        //group by the first attribute, aggregate the second attribute.
+        This completes the spike through the system.
+        */
 
         //outputMemArray->
         //PhysicalOperator::dumpArrayToLog(outputMemArray, logger);
