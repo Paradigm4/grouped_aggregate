@@ -234,6 +234,8 @@ private:
         //dims.push_back(DimensionDesc("sender_instance", 0, MAX_COORDINATE, 1, 0));
         //dims.push_back(DimensionDesc("chunk_number", 0, MAX_COORDINATE, 1, 0));
         //LOG4CXX_DEBUG(logger, "Cell0:" << _cellPos[0] << " ,Cell1: " <<_cellPos[1] <<",_lastval:" << (_lastVal ) <<"bucket:" << bucketId);
+
+        //TODO: This needs to be cleaned up and commented. It's very hard to understand.
         if ((_cellPos[3] % _chunkSize == 0) || (_cellPos[0] != _lastBucketIdVal) )
         {
 
@@ -1249,6 +1251,10 @@ public:
                 boost::shared_ptr<Query> query = _query;
                 ArrayDesc schema = getSpillMemArrayDesc();
 
+                //attrs.push_back(AttributeDesc(1, "key",  TID_UINT64, 0, 0));
+                //attrs.push_back(AttributeDesc(2, "bucketid",  TID_UINT64, 0, 0));
+                //dims.push_back(DimensionDesc("ii", 0, MAX_COORDINATE, ARRAY_CHUNK_SIZE, 0));
+
                 // Sort
     	        const bool preservePositions = false;
     	        SortArray sorter(schema, _arena, preservePositions);
@@ -1261,7 +1267,7 @@ public:
     	        //PhysicalOperator::dumpArrayToLog(_sortedArray, logger);
 
     	    	//shared_ptr<MemArray> finalizedSort( new MemArray(getMergeArrayDesc(), _query));
-    	        size_t const nInstances = _query->getInstancesCount();
+    	        size_t const nInstances       = _query->getInstancesCount();
     	        InstanceID const myInstanceId = _query->getInstanceID();
 
     	        LOG4CXX_DEBUG(logger, "Appending FOO1: ");
@@ -1485,6 +1491,7 @@ public:
     	//        return boost::shared_ptr<Array>(new MergeArray(_schema, inputArrays));
 
     	LOG4CXX_DEBUG(logger, "finalizeMerge Begin: ");
+
     	shared_ptr<MemArray> output( new MemArray(getMergeArrayDesc(), _query));
         size_t const nInstances = _query->getInstancesCount();
         InstanceID const myInstanceId = _query->getInstanceID();

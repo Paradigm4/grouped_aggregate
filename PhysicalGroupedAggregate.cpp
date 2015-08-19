@@ -100,17 +100,18 @@ public:
        // shared_ptr<MemArray> collector.finalizeNoFlush()
 
 
-        //collector.finalize();
+        //finalize the overflow array
+        //this has been sorteed and decompressed.
         shared_ptr<MemArray> outputMemArray =  collector.finalizeSort();
         //PhysicalOperator::dumpArrayToLog(outputMemArray, logger);
         LOG4CXX_DEBUG(logger, "finalizeSort Completed: ");
 
+        //finalize the hash collector
         shared_ptr<MemArray> outputMemArrayHash =  collector.finalizeHash();
-
         LOG4CXX_DEBUG(logger, "finalizeHash Completed: ");
 
         ArrayDesc  opSchema;
-
+        //merge the large hash table and the overfloq array
         shared_ptr <MemArray> uniqArray = collector.finalizeMerge(outputMemArrayHash, outputMemArray, opSchema);
 
 

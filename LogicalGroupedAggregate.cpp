@@ -35,6 +35,7 @@ public:
         Attributes outputAttributes;
         outputAttributes.push_back( AttributeDesc(0, "num_chunks", TID_UINT64, 0, 0));
         outputAttributes.push_back( AttributeDesc(1, "num_cells", TID_UINT64, 0, 0));
+        outputAttributes.push_back( AttributeDesc(2, "num_unique", TID_UINT64, 0, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("instance_no", 0, query->getInstancesCount(), 1, 0));
