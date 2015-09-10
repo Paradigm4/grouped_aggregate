@@ -99,8 +99,6 @@ public:
               return value;
           }
 
-
-
        void insertMapDataIntoArray(shared_ptr<Query>& query, MemArray& array, CoordValueMap const& m)
        {
            Coordinates coord(1);
