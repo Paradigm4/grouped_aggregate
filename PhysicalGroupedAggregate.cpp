@@ -23,6 +23,8 @@
 namespace scidb
 {
 
+using namespace std;
+
 class PhysicalGroupedAggregate : public PhysicalOperator
 {
 public:
@@ -33,15 +35,14 @@ public:
         PhysicalOperator(logicalName, physicalName, parameters, schema)
     {}
 
-    virtual ArrayDistribution getOutputDistribution(vector<ArrayDistribution> const& inputDistributions,
-                                                    vector<ArrayDesc> const& inputSchemas) const
-    {
-       return ArrayDistribution(psUndefined);
-    }
-
-    virtual bool changesDistribution(std::vector<ArrayDesc> const& sourceSchemas) const
+    virtual bool changesDistribution(std::vector<ArrayDesc> const&) const
     {
         return true;
+    }
+
+    virtual RedistributeContext getOutputDistribution(std::vector<RedistributeContext> const&, std::vector<ArrayDesc> const&) const
+    {
+        return RedistributeContext(psUndefined);
     }
 
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)

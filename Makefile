@@ -27,11 +27,8 @@ INSTALL_DIR = $(SCIDB)/lib/scidb/plugins
 # Include the OPTIMIZED flags for non-debug use
 OPTIMIZED=-O2 -DNDEBUG
 DEBUG=-g -ggdb3
-CFLAGS = -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
-         -Wno-long-long -Wno-unused-parameter -fPIC -D_STDC_FORMAT_MACROS \
-         -Wno-system-headers -isystem  $(OPTIMIZED) -D_STDC_LIMIT_MACROS -std=c99
 CCFLAGS = -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
-         -Wno-long-long -Wno-unused-parameter -fPIC $(OPTIMIZED) 
+         -Wno-long-long -Wno-unused-parameter -Wno-unused -fPIC $(OPTIMIZED) 
 INC = -I. -DPROJECT_ROOT="\"$(SCIDB)\"" -I"$(SCIDB_THIRDPARTY_PREFIX)/3rdparty/boost/include/" \
       -I"$(SCIDB)/include" -I./extern
 
@@ -41,6 +38,19 @@ LIBS = -shared -Wl,-soname,libgrouped_aggregate.so -ldl -L. \
 
 SRCS = LogicalGroupedAggregate.cpp \
        PhysicalGroupedAggregate.cpp
+
+# Compiler settings for SciDB version >= 15.7
+ifneq ("$(wildcard /usr/bin/g++-4.9)","")
+ CC := "/usr/bin/gcc-4.9"
+ CXX := "/usr/bin/g++-4.9"
+ CCFLAGS+=-std=c++11 -DCPP11
+else
+ ifneq ("$(wildcard /opt/rh/devtoolset-3/root/usr/bin/gcc)","")
+  CC := "/opt/rh/devtoolset-3/root/usr/bin/gcc"
+  CXX := "/opt/rh/devtoolset-3/root/usr/bin/g++"
+  CCFLAGS+=-std=c++11 -DCPP11
+ endif
+endif
 
 all: libgrouped_aggregate.so
 
