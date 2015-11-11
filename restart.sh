@@ -13,7 +13,7 @@ make SCIDB=$SCIDB_INSTALL SCIDB_THIRDPARTY_PREFIX=/opt/scidb/15.7
 
 scidb.py stopall $DBNAME 
 scidb.py startall $DBNAME
-sudo cp libgrouped_aggregate.so $SCIDB_INSTALL/lib/scidb/plugins/
+cp libgrouped_aggregate.so $SCIDB_INSTALL/lib/scidb/plugins/
 #for multinode setups, dont forget to copy to every instance
 iquery -aq "load_library('grouped_aggregate')"
 

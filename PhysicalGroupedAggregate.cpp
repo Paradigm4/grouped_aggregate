@@ -68,28 +68,41 @@ public:
         return RedistributeContext(psUndefined);
     }
 
-    #define MB 1000000
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
         shared_ptr<Array> inputArray = inputArrays[0];
-        shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));  //everyone has an attribute 0! Even the strangest arrays...
-        shared_ptr<ConstChunkIterator> chunkIter;
+
+
+        AttributeDesc const& attrDesc = inputArray->getArrayDesc().getAttributes()[0];
+        ArenaPtr operatorArena = this->getArena();
+
+        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
+        AttributeComparator cmp (attrDesc.getType());
+        MemoryHashTable mht(cmp, hashArena);
 
         size_t numChunks = 0;
         size_t numCells  = 0;
+        size_t numUnique = 0;
 
-        ArrayDesc const& inputDesc = inputArray->getArrayDesc();
+        mht.dumpStatsToLog();
+
+        shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));
+        shared_ptr<ConstChunkIterator> chunkIter;
         while (!arrayIter->end())
         {
             ++numChunks;
             chunkIter = arrayIter->getChunk().getConstIterator();
             while(! chunkIter->end())
             {
+                Value const& v = chunkIter->getItem();
+                mht.insert(v);
                 ++numCells;
                 ++(*chunkIter);
             }
             ++(*arrayIter);
         }
+
+        mht.dumpStatsToLog();
 
         shared_ptr<Array> outputArray(new MemArray(_schema, query));
 
@@ -112,7 +125,7 @@ public:
         outputArrayIter = outputArray->getIterator(2);
         outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
         outputChunkIter->setPosition(position);
-        value.setUint64(numCells);
+        value.setUint64(mht.numValues());
         outputChunkIter->writeItem(value);
         outputChunkIter->flush();
 
