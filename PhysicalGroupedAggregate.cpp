@@ -18,17 +18,12 @@
 #include <array/Metadata.h>
 #include <system/Cluster.h>
 #include <query/Query.h>
-#include <boost/make_shared.hpp>
-#include <boost/foreach.hpp>
 #include <system/Exceptions.h>
 #include <system/Utils.h>
 #include <log4cxx/logger.h>
 #include <util/NetworkMessage.h>
 #include <array/RLE.h>
 #include <array/SortArray.h>
-
-using namespace boost;
-using namespace std;
 
 #include "query/Operator.h"
 #include "HashTableUtilities.h"
@@ -37,6 +32,11 @@ using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <memory>
+#include <cstddef>
+
+using namespace boost;
+using namespace std;
 
 namespace scidb
 {
@@ -46,11 +46,12 @@ namespace grouped_aggregate
 
 class StateWriter : public boost::noncopyable
 {
-
 private:
     shared_ptr<Array> const _output;
-    Coordinates _outputPosition;
     size_t const _numAttributes;
+    size_t const _chunkSize;
+    shared_ptr<Query> _query;
+    Coordinates _outputPosition;
     vector<shared_ptr<ArrayIterator> > _outputArrayIterators;
     vector<shared_ptr<ChunkIterator> > _outputChunkIterators;
     Value _buf;
@@ -59,140 +60,181 @@ public:
     static ArrayDesc makeSchema(TypeId const& attributeType, size_t const chunkSize)
     {
         Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "bucket", TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(2, "value",  attributeType, 0, 0));
+        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("i", 0, CoordinateBounds::getMax(), chunkSize, 0));
         return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
     }
 
-    StateWriter(TypeId const& attributeType, size_t const chunkSize):
-        _output(make_shared<MemArray>(schema,query)),
-        _outputPosition( splitOnDimension ? 5 : 4, 0),
-        _numLiveAttributes(schema.getAttributes(true).size()),
-        _outputLineSize(splitOnDimension ? schema.getDimensions()[4].getChunkInterval() : _numLiveAttributes),
-        _outputChunkSize(schema.getDimensions()[3].getChunkInterval()),
-        _outputArrayIterators(_numLiveAttributes),
-        _outputChunkIterators(_numLiveAttributes),
-        _splitOnDimension(splitOnDimension),
-        _outputColumn(0),
-        _attributeDelimiter(attDelimiter)
+    StateWriter(TypeId const& attributeType, size_t const chunkSize, shared_ptr<Query> const& query):
+        _output(make_shared<MemArray>(makeSchema(attributeType, chunkSize), query)),
+        _numAttributes(2),
+        _chunkSize(chunkSize),
+        _query(query),
+        _outputPosition(1, 0),
+        _outputArrayIterators(_numAttributes),
+        _outputChunkIterators(_numAttributes)
     {
-        for(AttributeID i =0; i<_numLiveAttributes; ++i)
+        for(AttributeID i =0; i<_numAttributes; ++i)
         {
             _outputArrayIterators[i] = _output->getIterator(i);
         }
     }
 
-    void newChunk (Coordinates const& inputChunkPosition, shared_ptr<Query>& query)
+    void writeValue (uint64_t const hash, Value const& v)
     {
-        _outputPosition[0] = inputChunkPosition[0];
-        _outputPosition[1] = inputChunkPosition[1];
-        _outputPosition[2] = inputChunkPosition[2];
-        _outputPosition[3] = 0;
-        if(_splitOnDimension)
+        if(_outputPosition[0] % _chunkSize == 0)
         {
-            _outputPosition[4] = 0;
+            for(AttributeID i=0; i<_numAttributes; ++i)
+            {
+                if(_outputChunkIterators[i].get())
+                {
+                    _outputChunkIterators[i]->flush();
+                }
+                _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
+                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE :
+                                         ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
+            }
         }
-        for(AttributeID i =0; i<_numLiveAttributes; ++i)
+        _buf.setUint64(hash);
+        _outputChunkIterators[0]->setPosition(_outputPosition);
+        _outputChunkIterators[0]->writeItem(_buf);
+        _outputChunkIterators[1]->setPosition(_outputPosition);
+        _outputChunkIterators[1]->writeItem(v);
+        ++(_outputPosition[0]);
+    }
+
+    shared_ptr<Array> finalize()
+    {
+        for(AttributeID i =0; i<_numAttributes; ++i)
         {
             if(_outputChunkIterators[i].get())
             {
                 _outputChunkIterators[i]->flush();
             }
-            _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(query,
-                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
+            _outputChunkIterators[i].reset();
+            _outputArrayIterators[i].reset();
+        }
+        return _output;
+    }
+};
+
+
+class MergeWriter : public boost::noncopyable
+{
+private:
+    shared_ptr<Array> const _output;
+    size_t const _numAttributes;
+    size_t const _chunkSize;
+    size_t const _numInstances;
+    InstanceID const _myInstanceId;
+    vector<uint64_t> _hashBreaks;
+    size_t _currentBreak;
+    shared_ptr<Query> _query;
+    Coordinates _outputPosition;
+    vector<shared_ptr<ArrayIterator> > _outputArrayIterators;
+    vector<shared_ptr<ChunkIterator> > _outputChunkIterators;
+    uint64_t _prevHash;
+    Value    _prevVal;
+
+public:
+    static ArrayDesc makeSchema(TypeId const& attributeType, size_t const chunkSize, size_t const numInstances)
+    {
+        Attributes outputAttributes;
+        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
+        outputAttributes = addEmptyTagAttribute(outputAttributes);
+        Dimensions outputDimensions;
+        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
+        outputDimensions.push_back(DimensionDesc("value_no",        0, chunkSize-1, chunkSize, 0));
+        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
+    }
+
+    MergeWriter(TypeId const& attributeType, size_t const chunkSize, shared_ptr<Query> const& query):
+        _output(make_shared<MemArray>(makeSchema(attributeType, chunkSize, query->getInstancesCount()), query)),
+        _numAttributes(2),
+        _chunkSize(chunkSize),
+        _numInstances(query->getInstancesCount()),
+        _myInstanceId(query->getInstanceID()),
+        _hashBreaks(_numInstances-1,0),
+        _query(query),
+        _outputPosition(4, 0),
+        _outputArrayIterators(_numAttributes),
+        _outputChunkIterators(_numAttributes),
+        _prevHash(0)
+    {
+        _prevVal.setNull(0);
+        uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
+        for(size_t i=0; i<_numInstances-1; ++i)
+        {
+            _hashBreaks[i] = break_interval * (i+1);
+        }
+        _currentBreak = 0;
+        _outputPosition[0] = 0;
+        _outputPosition[1] = _myInstanceId;
+        _outputPosition[2] = -1;
+        _outputPosition[3] = 0;
+        for(AttributeID i =0; i<_numAttributes; ++i)
+        {
+            _outputArrayIterators[i] = _output->getIterator(i);
         }
     }
 
-    void writeValue (char const* start, char const* end)
+    void writeValue (Value const& hash, Value const& v)
     {
-        if(_outputColumn < _outputLineSize - 1)
+        uint64_t const h = hash.getUint64();
+        if(_prevVal.getMissingReason() != 0 && _prevHash == h && _prevVal == v)
         {
-            _buf.setSize(end - start + 1);
-            char* d = _buf.getData<char>();
-            memcpy(d, start, end-start);
-            d[(end-start)]=0;
-            if(_splitOnDimension)
-            {
-                _outputChunkIterators[0] -> setPosition(_outputPosition);
-                _outputChunkIterators[0] -> writeItem(_buf);
-                ++(_outputPosition[4]);
-            }
-            else
-            {
-                _outputChunkIterators[_outputColumn] -> setPosition(_outputPosition);
-                _outputChunkIterators[_outputColumn] -> writeItem(_buf);
-            }
+            return;
         }
-        else if (_outputColumn == _outputLineSize - 1)
+        //gonna do a write, then!
+        while(h > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
         {
-            string value(start, end-start);
-            _errorBuf << "long" << _attributeDelimiter << value;
+            ++_currentBreak;
         }
-        else
+        bool newChunk = false;
+        if ( static_cast<Coordinate>(_currentBreak) != _outputPosition[0])
         {
-            string value(start, end-start);
-            _errorBuf << _attributeDelimiter << value;
+            _outputPosition[0] = _currentBreak;
+            _outputPosition[2] = 0;
+            _outputPosition[3] = 0;
+            newChunk = true;
         }
-        ++_outputColumn;
-    }
-
-    void endLine()
-    {
-        if(_outputColumn < _outputLineSize - 1)
+        else if(_outputPosition[3] % _chunkSize == 0)
         {
-            _buf.setNull();
-            if(_splitOnDimension)
+            ++(_outputPosition[2]);
+            _outputPosition[3] = 0;
+            newChunk = true;
+        }
+        if( newChunk )
+        {
+            for(AttributeID i=0; i<_numAttributes; ++i)
             {
-                while (_outputColumn < _outputLineSize - 1)
+                if(_outputChunkIterators[i].get())
                 {
-                    _outputChunkIterators[0] -> setPosition(_outputPosition);
-                    _outputChunkIterators[0] -> writeItem(_buf);
-                    ++(_outputPosition[4]);
-                    ++_outputColumn;
+                    _outputChunkIterators[i]->flush();
                 }
+                _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
+                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE :
+                                         ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
             }
-            else
-            {
-                while (_outputColumn < _outputLineSize - 1)
-                {
-                    _outputChunkIterators[_outputColumn] -> setPosition(_outputPosition);
-                    _outputChunkIterators[_outputColumn] -> writeItem(_buf);
-                    ++_outputColumn;
-                }
-            }
-            _errorBuf << "short";
         }
-        if(_errorBuf.str().size())
-        {
-            _buf.setString(_errorBuf.str());
-        }
-        else
-        {
-            _buf.setNull();
-        }
-        if(_splitOnDimension)
-        {
-            _outputChunkIterators[0] -> setPosition(_outputPosition);
-            _outputChunkIterators[0] -> writeItem(_buf);
-            _outputPosition[4] = 0;
-        }
-        else
-        {
-            _outputChunkIterators[_outputLineSize - 1] -> setPosition(_outputPosition);
-            _outputChunkIterators[_outputLineSize - 1] -> writeItem(_buf);
-        }
+        _outputChunkIterators[0]->setPosition(_outputPosition);
+        _outputChunkIterators[0]->writeItem(hash);
+        _outputChunkIterators[1]->setPosition(_outputPosition);
+        _outputChunkIterators[1]->writeItem(v);
         ++(_outputPosition[3]);
-        _errorBuf.str("");
-        _outputColumn = 0;
+        _prevHash = h;
+        _prevVal  = v;
     }
 
     shared_ptr<Array> finalize()
     {
-        for(AttributeID i =0; i<_numLiveAttributes; ++i)
+        for(AttributeID i =0; i<_numAttributes; ++i)
         {
             if(_outputChunkIterators[i].get())
             {
@@ -207,13 +249,10 @@ public:
 
 } //namespace grouped_aggregate
 
-using namespace std;
-using namespace grouped_aggregate
-using std::shared_ptr;
+using namespace grouped_aggregate;
 
 class PhysicalGroupedAggregate : public PhysicalOperator
 {
-
 	 typedef map<Coordinate, Value> CoordValueMap;
 	 typedef std::pair<Coordinate, Value> CoordValueMapEntry;
 
@@ -235,68 +274,94 @@ public:
         return RedistributeContext(psUndefined);
     }
 
-    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+    shared_ptr<Array> preFlatten(shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
     {
-        shared_ptr<Array> inputArray = inputArrays[0];
-
-
         AttributeDesc const& attrDesc = inputArray->getArrayDesc().getAttributes()[0];
         ArenaPtr operatorArena = this->getArena();
-
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
         AttributeComparator cmp (attrDesc.getType());
         MemoryHashTable mht(cmp, hashArena);
-
-        size_t numChunks = 0;
-        size_t numCells  = 0;
-        size_t numUnique = 0;
-
-        mht.dumpStatsToLog();
-
+        bool exhausted = false;
+        size_t const maxTableBytes = 60 * 1024 * 1024;
+        StateWriter spillover (attrDesc.getType(), 1024*1024, query);
         shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));
         shared_ptr<ConstChunkIterator> chunkIter;
         while (!arrayIter->end())
         {
-            ++numChunks;
             chunkIter = arrayIter->getChunk().getConstIterator();
             while(! chunkIter->end())
             {
                 Value const& v = chunkIter->getItem();
-                mht.insert(v);
-                ++numCells;
+                if (!exhausted)
+                {
+                    bool inserted = mht.insert(v);
+                    if(inserted && mht.usedBytes() > maxTableBytes)
+                    {
+                        LOG4CXX_DEBUG(logger, "Table exhausted!");
+                        mht.dumpStatsToLog();
+                        exhausted = true;
+                    }
+                }
+                else
+                {
+                    uint64_t hash;
+                    if(!mht.contains(v, hash))
+                    {
+                        spillover.writeValue(hash, v);
+                    }
+                }
                 ++(*chunkIter);
             }
             ++(*arrayIter);
         }
+        MemoryHashTable::const_iterator iter = mht.getIterator();
+        while( !iter.end() )
+        {
+            spillover.writeValue(iter.getCurrentHash(), iter.getCurrentItem());
+            iter.next();
+        }
+        return spillover.finalize();
+    }
 
-        mht.dumpStatsToLog();
+    shared_ptr<Array> condense (shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
+    {
+        shared_ptr<Array> arr = preFlatten(inputArray, query);
+        SortingAttributeInfos sortingAttributeInfos(2);
+        sortingAttributeInfos[0].columnNo = 0;
+        sortingAttributeInfos[0].ascent = true;
+        sortingAttributeInfos[1].columnNo = 1;
+        sortingAttributeInfos[1].ascent = true;
+        const bool preservePositions = false;
+        SortArray sorter(arr->getArrayDesc(),
+                         _arena,
+                         preservePositions,
+                         1000000);
+        std::shared_ptr<TupleComparator> tcomp(std::make_shared<TupleComparator>(sortingAttributeInfos, arr->getArrayDesc()));
+        arr = sorter.getSortedArray(arr, query, tcomp);
+        MergeWriter merger(inputArray->getArrayDesc().getAttributes()[0].getType(), 1000000, query);
+        shared_ptr<ConstArrayIterator> haiter = arr->getConstIterator(0);
+        shared_ptr<ConstArrayIterator> vaiter = arr->getConstIterator(1);
+        while(!haiter->end())
+        {
+            shared_ptr<ConstChunkIterator> hciter = haiter->getChunk().getConstIterator();
+            shared_ptr<ConstChunkIterator> vciter = vaiter->getChunk().getConstIterator();
+            while(!hciter->end())
+            {
+                Value const& hash = hciter->getItem();
+                Value const& val  = vciter->getItem();
+                merger.writeValue(hash, val);
+                ++(*hciter);
+                ++(*vciter);
+            }
+            ++(*haiter);
+            ++(*vaiter);
+        }
+        return merger.finalize();
+    }
 
-        shared_ptr<Array> outputArray(new MemArray(_schema, query));
-
-        shared_ptr<ArrayIterator> outputArrayIter = outputArray->getIterator(0);
-        Coordinates position(1, query->getInstanceID());
-        shared_ptr<ChunkIterator> outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE);
-        outputChunkIter->setPosition(position);
-        Value value;
-        value.setUint64(numChunks);
-        outputChunkIter->writeItem(value);
-        outputChunkIter->flush();
-
-        outputArrayIter = outputArray->getIterator(1);
-        outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
-        outputChunkIter->setPosition(position);
-        value.setUint64(numCells);
-        outputChunkIter->writeItem(value);
-        outputChunkIter->flush();
-
-        outputArrayIter = outputArray->getIterator(2);
-        outputChunkIter = outputArrayIter->newChunk(position).getIterator(query, ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
-        outputChunkIter->setPosition(position);
-        value.setUint64(mht.numValues());
-        outputChunkIter->writeItem(value);
-        outputChunkIter->flush();
-
-        return outputArray;
+    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+    {
+        return condense(inputArrays[0], query);
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");

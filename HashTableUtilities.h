@@ -19,6 +19,9 @@ using std::dynamic_pointer_cast;
 
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.distinct"));
 
+namespace grouped_aggregate
+{
+
 // MurmurHash2, 64-bit versions, by Austin Appleby
 // From https://sites.google.com/site/murmurhash/
 // MIT license
@@ -100,17 +103,14 @@ public:
     ~ValueChain()
     {}
 
-//    ValueChain(super::allocator_type const& a, ValueChain const& c):
-//    	super(a, c.begin(), c.end())
-//    {}
-//
-//    ValueChain(mgd::set<Value, AttributeComparator>::allocator_type const& a, BOOST_RV_REF(ValueChain) c):
-//        super(a, c.begin(), c.end())
-//    {}
-
     bool insert(Value const& item)
     {
         return super::insert(item).second;
+    }
+
+    bool contains(Value const& item) const
+    {
+        return super::count(item) != 0;
     }
 };
 
@@ -141,6 +141,17 @@ public:
         ValueChain& v = super::insert(std::make_pair(hash, ValueChain(arena, comparator))).first->second;
         return v.insert(item);
     }
+
+    bool contains(uint64_t hash, Value const& item) const
+    {
+        super::const_iterator iter = super::find(hash);
+        if(iter==super::end())
+        {
+            return false;
+        }
+        ValueChain const& v = iter->second;
+        return v.contains(item);
+    }
 };
 
 //XXX: do not inherit
@@ -149,7 +160,7 @@ class MemoryHashTable
 private:
     mgd::vector < HashBucket >_data;
     ArenaPtr _arena;
-    mgd::set<size_t> _occupiedBuckets;
+    mgd::vector <size_t> _occupiedBuckets;
     size_t _numValues;
     size_t _numUsedBuckets;
     AttributeComparator const _comparator;
@@ -175,7 +186,7 @@ public:
         HashBucket& bucket = _data[bucketNo];
         if ( bucket.empty())
         {
-            _occupiedBuckets.insert(bucketNo);
+            _occupiedBuckets.push_back(bucketNo);
             ++_numUsedBuckets;
         }
         if(bucket.insert(_arena, _comparator, hash, item))
@@ -188,6 +199,13 @@ public:
             return true;
         }
         return false;
+    }
+
+    bool contains(Value const& item, uint64_t& hash) const
+    {
+        hash = hashValue(item);
+        uint64_t bucketNo = hash % NUM_BUCKETS;
+        return _data[bucketNo].contains(hash, item);
     }
 
     bool empty() const
@@ -209,14 +227,14 @@ public:
     {
     private:
         mgd::vector <HashBucket> const& _data;
-        mgd::set<size_t> const& _occupiedBuckets;
-        mgd::set<size_t>::const_iterator _tableIter;
+        mgd::vector<size_t> const& _occupiedBuckets;
+        mgd::vector<size_t>::const_iterator _tableIter;
         HashBucket::const_iterator _bucketIter;
         ValueChain::const_iterator _chainIter;
 
     public:
         const_iterator(mgd::vector <HashBucket> const& data,
-                       mgd::set<size_t> const& occupiedBuckets):
+                       mgd::vector<size_t> const& occupiedBuckets):
           _data(data),
           _occupiedBuckets(occupiedBuckets)
         {
@@ -303,5 +321,6 @@ public:
     }
 };
 
+} //namespace grouped_aggregate
 
 } //namespace scidb

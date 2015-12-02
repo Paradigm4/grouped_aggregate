@@ -33,14 +33,18 @@ public:
 
     ArrayDesc inferSchema(vector< ArrayDesc> schemas, shared_ptr< Query> query)
     {
+        size_t const numInstances = query->getInstancesCount();
+        TypeId const attributeType = schemas[0].getAttributes()[0].getType();
         Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "num_chunks", TID_UINT64, 0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "num_cells", TID_UINT64, 0, 0));
-        outputAttributes.push_back( AttributeDesc(2, "num_unique", TID_UINT64, 0, 0));
+        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
-        outputDimensions.push_back(DimensionDesc("instance_no", 0, query->getInstancesCount(), 1, 0));
-        return ArrayDesc("grouped_aggregte_test", outputAttributes, outputDimensions,  defaultPartitioning());
+        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
+        outputDimensions.push_back(DimensionDesc("value_no",        0, 1000000-1, 1000000, 0));
+        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
     }
 };
 
