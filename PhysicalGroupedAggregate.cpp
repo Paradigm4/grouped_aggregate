@@ -184,6 +184,13 @@ public:
         }
     }
 
+    void writeValue (uint64_t const hash, Value const& v)
+    {
+        Value buf;
+        buf.setUint64(hash);
+        writeValue(buf, v);
+    }
+
     void writeValue (Value const& hash, Value const& v)
     {
         uint64_t const h = hash.getUint64();
@@ -361,7 +368,104 @@ public:
 
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
-        return condense(inputArrays[0], query);
+        TypeId const inputType = inputArrays[0]->getArrayDesc().getAttributes()[0].getType();
+        AttributeComparator attComp(inputType);
+        shared_ptr<Array> condensed = condense(inputArrays[0], query);
+        condensed = redistributeToRandomAccess(condensed, query, psByRow, ALL_INSTANCE_MASK,
+                                               std::shared_ptr<CoordinateTranslator>(),
+                                               0,
+                                               std::shared_ptr<PartitioningSchemaData>());
+        MergeWriter output(inputArrays[0]->getArrayDesc().getAttributes()[0].getType(),
+                           1000000,
+                           query);
+        size_t const numInstances = query->getInstancesCount();
+        vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
+        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
+        vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
+        vector<shared_ptr<ConstChunkIterator> > vciters(numInstances);
+        vector<Coordinates > positions(numInstances);
+        size_t numClosed = 0;
+        for(size_t inst =0; inst<numInstances; ++inst)
+        {
+            positions[inst].resize(4);
+            positions[inst][0] = query->getInstanceID();
+            positions[inst][1] = inst;
+            positions[inst][2] = 0;
+            positions[inst][3] = 0;
+            haiters[inst] = condensed->getConstIterator(0);
+            if(!haiters[inst]->setPosition(positions[inst]))
+            {
+                haiters[inst].reset();
+                vaiters[inst].reset();
+                hciters[inst].reset();
+                vciters[inst].reset();
+                numClosed++;
+            }
+            else
+            {
+                vaiters[inst] = condensed->getConstIterator(1);
+                vaiters[inst]->setPosition(positions[inst]);
+                hciters[inst] = haiters[inst]->getChunk().getConstIterator();
+                vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+            }
+        }
+        while(numClosed < numInstances)
+        {
+            bool minHashSet = false;
+            uint64_t minHash=0;
+            Value minItem;
+            for(size_t inst=0; inst<numInstances; ++inst)
+            {
+                if(hciters[inst] == 0)
+                {
+                    continue;
+                }
+                uint64_t hash = hciters[inst]->getItem().getUint64();
+                Value const& val = vciters[inst]->getItem();
+                if(!minHashSet || (hash < minHash || (hash == minHash && attComp(val, minItem))))
+                {
+                    minHash = hash;
+                    minItem = val;
+                    minHashSet = true;
+                }
+            }
+            output.writeValue(minHash, minItem);
+            for(size_t inst=0; inst<numInstances; ++inst)
+            {
+                if(hciters[inst] == 0)
+                {
+                    continue;
+                }
+                uint64_t hash = hciters[inst]->getItem().getUint64();
+                Value const& val = vciters[inst]->getItem();
+                if(hash == minHash && val == minItem)
+                {
+                    ++(*hciters[inst]);
+                    ++(*vciters[inst]);
+                    if(hciters[inst]->end())
+                    {
+                        ++(positions[inst][2]);
+                        positions[inst][3] = 0;
+                        bool sp = haiters[inst]->setPosition(positions[inst]);
+                        if(!sp)
+                        {
+                            haiters[inst].reset();
+                            vaiters[inst].reset();
+                            hciters[inst].reset();
+                            vciters[inst].reset();
+                            numClosed++;
+                        }
+                        else
+                        {
+                            vaiters[inst]->setPosition(positions[inst]);
+                            hciters[inst] = haiters[inst]->getChunk().getConstIterator();
+                            vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+                        }
+                    }
+                }
+            }
+        }
+        return output.finalize();
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");
