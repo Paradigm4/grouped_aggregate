@@ -289,7 +289,7 @@ public:
         AttributeComparator cmp (attrDesc.getType());
         MemoryHashTable mht(cmp, hashArena);
         bool exhausted = false;
-        size_t const maxTableBytes = 60 * 1024 * 1024;
+        size_t const maxTableBytes = 128 * 1024 * 1024;
         StateWriter spillover (attrDesc.getType(), 1024*1024, query);
         shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));
         shared_ptr<ConstChunkIterator> chunkIter;
@@ -366,18 +366,16 @@ public:
         return merger.finalize();
     }
 
-    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+
+    shared_ptr<Array> shuffleMerge(shared_ptr<Array>& inputArray, shared_ptr<Query> const& query)
     {
-        TypeId const inputType = inputArrays[0]->getArrayDesc().getAttributes()[0].getType();
+        TypeId const inputType = inputArray->getArrayDesc().getAttributes()[0].getType();
+        shared_ptr<Array> redist = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK,
+                                                                 std::shared_ptr<CoordinateTranslator>(),
+                                                                 0,
+                                                                 std::shared_ptr<PartitioningSchemaData>());
         AttributeComparator attComp(inputType);
-        shared_ptr<Array> condensed = condense(inputArrays[0], query);
-        condensed = redistributeToRandomAccess(condensed, query, psByRow, ALL_INSTANCE_MASK,
-                                               std::shared_ptr<CoordinateTranslator>(),
-                                               0,
-                                               std::shared_ptr<PartitioningSchemaData>());
-        MergeWriter output(inputArrays[0]->getArrayDesc().getAttributes()[0].getType(),
-                           1000000,
-                           query);
+        MergeWriter output(inputType, 1000000, query);
         size_t const numInstances = query->getInstancesCount();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
         vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
@@ -392,7 +390,7 @@ public:
             positions[inst][1] = inst;
             positions[inst][2] = 0;
             positions[inst][3] = 0;
-            haiters[inst] = condensed->getConstIterator(0);
+            haiters[inst] = redist->getConstIterator(0);
             if(!haiters[inst]->setPosition(positions[inst]))
             {
                 haiters[inst].reset();
@@ -403,7 +401,7 @@ public:
             }
             else
             {
-                vaiters[inst] = condensed->getConstIterator(1);
+                vaiters[inst] = redist->getConstIterator(1);
                 vaiters[inst]->setPosition(positions[inst]);
                 hciters[inst] = haiters[inst]->getChunk().getConstIterator();
                 vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
@@ -466,6 +464,13 @@ public:
             }
         }
         return output.finalize();
+    }
+
+    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+    {
+        shared_ptr<Array> result = condense(inputArrays[0], query);
+        result = shuffleMerge(result, query);
+        return result;
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");
