@@ -14,6 +14,7 @@
 */
 
 #include "query/Operator.h"
+#include "GroupedAggregateSettings.h"
 
 namespace scidb
 {
@@ -27,6 +28,8 @@ public:
         LogicalOperator(logicalName, alias)
     {
         ADD_PARAM_INPUT()
+        ADD_PARAM_IN_ATTRIBUTE_NAME("void")
+        ADD_PARAM_AGGREGATE_CALL()
         //TODO
         _usage = "write me a usage, bro!\n";
     }
@@ -34,10 +37,11 @@ public:
     ArrayDesc inferSchema(vector< ArrayDesc> schemas, shared_ptr< Query> query)
     {
         size_t const numInstances = query->getInstancesCount();
-        TypeId const attributeType = schemas[0].getAttributes()[0].getType();
+        grouped_aggregate::Settings settings(schemas[0], _parameters, true, query);
         Attributes outputAttributes;
         outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "group",  settings.getGroupAttributeType(), 0, 0));
+        outputAttributes.push_back( AttributeDesc(2, "state",  settings.getStateType(), AttributeDesc::IS_NULLABLE, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));

@@ -35,6 +35,12 @@
 #include <memory>
 #include <cstddef>
 
+#include "GroupedAggregateSettings.h"
+
+// Logger for operator. static to prevent visibility of variable outside of file
+static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("agg"));
+
+
 using namespace boost;
 using namespace std;
 
@@ -44,7 +50,7 @@ namespace scidb
 namespace grouped_aggregate
 {
 
-class StateWriter : public boost::noncopyable
+class FlatWriter : public boost::noncopyable
 {
 private:
     shared_ptr<Array> const _output;
@@ -57,20 +63,21 @@ private:
     Value _buf;
 
 public:
-    static ArrayDesc makeSchema(TypeId const& attributeType, size_t const chunkSize)
+    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& valueType, size_t const chunkSize)
     {
         Attributes outputAttributes;
         outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "group",  groupType, 0, 0));
+        outputAttributes.push_back( AttributeDesc(2, "state",  valueType,     AttributeDesc::IS_NULLABLE, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("i", 0, CoordinateBounds::getMax(), chunkSize, 0));
         return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
     }
 
-    StateWriter(TypeId const& attributeType, size_t const chunkSize, shared_ptr<Query> const& query):
-        _output(make_shared<MemArray>(makeSchema(attributeType, chunkSize), query)),
-        _numAttributes(2),
+    FlatWriter(TypeId const& groupType, TypeId const& valueType, size_t const chunkSize, shared_ptr<Query> const& query):
+        _output(make_shared<MemArray>(makeSchema(groupType, valueType, chunkSize), query)),
+        _numAttributes(3),
         _chunkSize(chunkSize),
         _query(query),
         _outputPosition(1, 0),
@@ -83,7 +90,7 @@ public:
         }
     }
 
-    void writeValue (uint64_t const hash, Value const& v)
+    void writeValue (uint64_t const hash, Value const& group, Value const& state)
     {
         if(_outputPosition[0] % _chunkSize == 0)
         {
@@ -102,7 +109,9 @@ public:
         _outputChunkIterators[0]->setPosition(_outputPosition);
         _outputChunkIterators[0]->writeItem(_buf);
         _outputChunkIterators[1]->setPosition(_outputPosition);
-        _outputChunkIterators[1]->writeItem(v);
+        _outputChunkIterators[1]->writeItem(group);
+        _outputChunkIterators[2]->setPosition(_outputPosition);
+        _outputChunkIterators[2]->writeItem(state);
         ++(_outputPosition[0]);
     }
 
@@ -136,70 +145,14 @@ private:
     Coordinates _outputPosition;
     vector<shared_ptr<ArrayIterator> > _outputArrayIterators;
     vector<shared_ptr<ChunkIterator> > _outputChunkIterators;
-    uint64_t _prevHash;
-    Value    _prevVal;
+    Value    _curHash;
+    Value    _curGroup;
+    Value    _curState;
 
-public:
-    static ArrayDesc makeSchema(TypeId const& attributeType, size_t const chunkSize, size_t const numInstances)
+    void writeCurrent()
     {
-        Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "value",  attributeType, 0, 0));
-        outputAttributes = addEmptyTagAttribute(outputAttributes);
-        Dimensions outputDimensions;
-        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
-        outputDimensions.push_back(DimensionDesc("value_no",        0, chunkSize-1, chunkSize, 0));
-        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
-    }
-
-    MergeWriter(TypeId const& attributeType, size_t const chunkSize, shared_ptr<Query> const& query):
-        _output(make_shared<MemArray>(makeSchema(attributeType, chunkSize, query->getInstancesCount()), query)),
-        _numAttributes(2),
-        _chunkSize(chunkSize),
-        _numInstances(query->getInstancesCount()),
-        _myInstanceId(query->getInstanceID()),
-        _hashBreaks(_numInstances-1,0),
-        _query(query),
-        _outputPosition(4, 0),
-        _outputArrayIterators(_numAttributes),
-        _outputChunkIterators(_numAttributes),
-        _prevHash(0)
-    {
-        _prevVal.setNull(0);
-        uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
-        for(size_t i=0; i<_numInstances-1; ++i)
-        {
-            _hashBreaks[i] = break_interval * (i+1);
-        }
-        _currentBreak = 0;
-        _outputPosition[0] = 0;
-        _outputPosition[1] = _myInstanceId;
-        _outputPosition[2] = -1;
-        _outputPosition[3] = 0;
-        for(AttributeID i =0; i<_numAttributes; ++i)
-        {
-            _outputArrayIterators[i] = _output->getIterator(i);
-        }
-    }
-
-    void writeValue (uint64_t const hash, Value const& v)
-    {
-        Value buf;
-        buf.setUint64(hash);
-        writeValue(buf, v);
-    }
-
-    void writeValue (Value const& hash, Value const& v)
-    {
-        uint64_t const h = hash.getUint64();
-        if(_prevVal.getMissingReason() != 0 && _prevHash == h && _prevVal == v)
-        {
-            return;
-        }
         //gonna do a write, then!
-        while(h > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
+        while(_curHash.getUint64() > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
         {
             ++_currentBreak;
         }
@@ -226,21 +179,117 @@ public:
                     _outputChunkIterators[i]->flush();
                 }
                 _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
-                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE :
-                                         ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
+                                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
             }
         }
         _outputChunkIterators[0]->setPosition(_outputPosition);
-        _outputChunkIterators[0]->writeItem(hash);
+        _outputChunkIterators[0]->writeItem(_curHash);
         _outputChunkIterators[1]->setPosition(_outputPosition);
-        _outputChunkIterators[1]->writeItem(v);
+        _outputChunkIterators[1]->writeItem(_curGroup);
+        _outputChunkIterators[2]->setPosition(_outputPosition);
+        _outputChunkIterators[2]->writeItem(_curState);
         ++(_outputPosition[3]);
-        _prevHash = h;
-        _prevVal  = v;
+    }
+
+public:
+    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& stateType, size_t const chunkSize, size_t const numInstances)
+    {
+        Attributes outputAttributes;
+        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
+        outputAttributes.push_back( AttributeDesc(1, "group",  groupType,     0, 0));
+        outputAttributes.push_back( AttributeDesc(2, "state",  stateType,     AttributeDesc::IS_NULLABLE, 0));
+        outputAttributes = addEmptyTagAttribute(outputAttributes);
+        Dimensions outputDimensions;
+        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
+        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
+        outputDimensions.push_back(DimensionDesc("value_no",        0, chunkSize-1, chunkSize, 0));
+        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
+    }
+
+    MergeWriter(TypeId const& attributeType, TypeId const& stateType, size_t const chunkSize, shared_ptr<Query> const& query):
+        _output(make_shared<MemArray>(makeSchema(attributeType, stateType, chunkSize, query->getInstancesCount()), query)),
+        _numAttributes(3),
+        _chunkSize(chunkSize),
+        _numInstances(query->getInstancesCount()),
+        _myInstanceId(query->getInstanceID()),
+        _hashBreaks(_numInstances-1,0),
+        _query(query),
+        _outputPosition(4, 0),
+        _outputArrayIterators(_numAttributes),
+        _outputChunkIterators(_numAttributes)
+    {
+        _curHash.setNull(0);
+        _curGroup.setNull(0);
+        _curState.setNull(0);
+        uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
+        LOG4CXX_DEBUG(logger, "BREAK_INTERVAL: "<<break_interval)
+        for(size_t i=0; i<_numInstances-1; ++i)
+        {
+            _hashBreaks[i] = break_interval * (i+1);
+            LOG4CXX_DEBUG(logger, "HASH_BREAKS: "<<i<<" "<<_hashBreaks[i])
+        }
+        _currentBreak = 0;
+        _outputPosition[0] = 0;
+        _outputPosition[1] = _myInstanceId;
+        _outputPosition[2] = -1;
+        _outputPosition[3] = 0;
+        for(AttributeID i =0; i<_numAttributes; ++i)
+        {
+            _outputArrayIterators[i] = _output->getIterator(i);
+        }
+    }
+
+    void writeValue (uint64_t const hash, Value const& group, Value const& item, AggregatePtr& agg)
+    {
+        Value buf;
+        buf.setUint64(hash);
+        writeValue(buf, group, item, agg);
+    }
+
+    void writeValue (Value const& hash, Value const& group, Value const& item, AggregatePtr& agg)
+    {
+        if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+        {
+            if(_curHash.getMissingReason() != 0)
+            {
+                writeCurrent();
+            }
+            _curHash = hash;
+            _curGroup = group;
+            agg->initializeState(_curState);
+        }
+        agg->accumulateIfNeeded(_curState, item);
+    }
+
+    void writeState (uint64_t const hash, Value const& group, Value const& state, AggregatePtr& agg)
+    {
+        Value buf;
+        buf.setUint64(hash);
+        writeState(buf, group, state, agg);
+    }
+
+    void writeState (Value const& hash, Value const& group, Value const& state, AggregatePtr& agg)
+    {
+        if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+        {
+            if(_curHash.getMissingReason() != 0)
+            {
+                writeCurrent();
+            }
+            _curHash = hash;
+            _curGroup = group;
+            agg->initializeState(_curState);
+        }
+        agg->mergeIfNeeded(_curState, state);
     }
 
     shared_ptr<Array> finalize()
     {
+        if(_curHash.getMissingReason() != 0)
+        {
+            writeCurrent();
+        }
         for(AttributeID i =0; i<_numAttributes; ++i)
         {
             if(_outputChunkIterators[i].get())
@@ -281,196 +330,233 @@ public:
         return RedistributeContext(psUndefined);
     }
 
-    shared_ptr<Array> preFlatten(shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
-    {
-        AttributeDesc const& attrDesc = inputArray->getArrayDesc().getAttributes()[0];
-        ArenaPtr operatorArena = this->getArena();
-        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
-        AttributeComparator cmp (attrDesc.getType());
-        MemoryHashTable mht(cmp, hashArena);
-        bool exhausted = false;
-        size_t const maxTableBytes = 128 * 1024 * 1024;
-        StateWriter spillover (attrDesc.getType(), 1024*1024, query);
-        shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));
-        shared_ptr<ConstChunkIterator> chunkIter;
-        while (!arrayIter->end())
-        {
-            chunkIter = arrayIter->getChunk().getConstIterator();
-            while(! chunkIter->end())
-            {
-                Value const& v = chunkIter->getItem();
-                if (!exhausted)
-                {
-                    bool inserted = mht.insert(v);
-                    if(inserted && mht.usedBytes() > maxTableBytes)
-                    {
-                        LOG4CXX_DEBUG(logger, "Table exhausted!");
-                        mht.dumpStatsToLog();
-                        exhausted = true;
-                    }
-                }
-                else
-                {
-                    uint64_t hash;
-                    if(!mht.contains(v, hash))
-                    {
-                        spillover.writeValue(hash, v);
-                    }
-                }
-                ++(*chunkIter);
-            }
-            ++(*arrayIter);
-        }
-        MemoryHashTable::const_iterator iter = mht.getIterator();
-        while( !iter.end() )
-        {
-            spillover.writeValue(iter.getCurrentHash(), iter.getCurrentItem());
-            iter.next();
-        }
-        return spillover.finalize();
-    }
-
-    shared_ptr<Array> condense (shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
-    {
-        shared_ptr<Array> arr = preFlatten(inputArray, query);
-        SortingAttributeInfos sortingAttributeInfos(2);
-        sortingAttributeInfos[0].columnNo = 0;
-        sortingAttributeInfos[0].ascent = true;
-        sortingAttributeInfos[1].columnNo = 1;
-        sortingAttributeInfos[1].ascent = true;
-        const bool preservePositions = false;
-        SortArray sorter(arr->getArrayDesc(),
-                         _arena,
-                         preservePositions,
-                         1000000);
-        std::shared_ptr<TupleComparator> tcomp(std::make_shared<TupleComparator>(sortingAttributeInfos, arr->getArrayDesc()));
-        arr = sorter.getSortedArray(arr, query, tcomp);
-        MergeWriter merger(inputArray->getArrayDesc().getAttributes()[0].getType(), 1000000, query);
-        shared_ptr<ConstArrayIterator> haiter = arr->getConstIterator(0);
-        shared_ptr<ConstArrayIterator> vaiter = arr->getConstIterator(1);
-        while(!haiter->end())
-        {
-            shared_ptr<ConstChunkIterator> hciter = haiter->getChunk().getConstIterator();
-            shared_ptr<ConstChunkIterator> vciter = vaiter->getChunk().getConstIterator();
-            while(!hciter->end())
-            {
-                Value const& hash = hciter->getItem();
-                Value const& val  = vciter->getItem();
-                merger.writeValue(hash, val);
-                ++(*hciter);
-                ++(*vciter);
-            }
-            ++(*haiter);
-            ++(*vaiter);
-        }
-        return merger.finalize();
-    }
-
-
-    shared_ptr<Array> shuffleMerge(shared_ptr<Array>& inputArray, shared_ptr<Query> const& query)
-    {
-        TypeId const inputType = inputArray->getArrayDesc().getAttributes()[0].getType();
-        shared_ptr<Array> redist = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK,
-                                                                 std::shared_ptr<CoordinateTranslator>(),
-                                                                 0,
-                                                                 std::shared_ptr<PartitioningSchemaData>());
-        AttributeComparator attComp(inputType);
-        MergeWriter output(inputType, 1000000, query);
-        size_t const numInstances = query->getInstancesCount();
-        vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
-        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
-        vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
-        vector<shared_ptr<ConstChunkIterator> > vciters(numInstances);
-        vector<Coordinates > positions(numInstances);
-        size_t numClosed = 0;
-        for(size_t inst =0; inst<numInstances; ++inst)
-        {
-            positions[inst].resize(4);
-            positions[inst][0] = query->getInstanceID();
-            positions[inst][1] = inst;
-            positions[inst][2] = 0;
-            positions[inst][3] = 0;
-            haiters[inst] = redist->getConstIterator(0);
-            if(!haiters[inst]->setPosition(positions[inst]))
-            {
-                haiters[inst].reset();
-                vaiters[inst].reset();
-                hciters[inst].reset();
-                vciters[inst].reset();
-                numClosed++;
-            }
-            else
-            {
-                vaiters[inst] = redist->getConstIterator(1);
-                vaiters[inst]->setPosition(positions[inst]);
-                hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
-            }
-        }
-        while(numClosed < numInstances)
-        {
-            bool minHashSet = false;
-            uint64_t minHash=0;
-            Value minItem;
-            for(size_t inst=0; inst<numInstances; ++inst)
-            {
-                if(hciters[inst] == 0)
-                {
-                    continue;
-                }
-                uint64_t hash = hciters[inst]->getItem().getUint64();
-                Value const& val = vciters[inst]->getItem();
-                if(!minHashSet || (hash < minHash || (hash == minHash && attComp(val, minItem))))
-                {
-                    minHash = hash;
-                    minItem = val;
-                    minHashSet = true;
-                }
-            }
-            output.writeValue(minHash, minItem);
-            for(size_t inst=0; inst<numInstances; ++inst)
-            {
-                if(hciters[inst] == 0)
-                {
-                    continue;
-                }
-                uint64_t hash = hciters[inst]->getItem().getUint64();
-                Value const& val = vciters[inst]->getItem();
-                if(hash == minHash && val == minItem)
-                {
-                    ++(*hciters[inst]);
-                    ++(*vciters[inst]);
-                    if(hciters[inst]->end())
-                    {
-                        ++(positions[inst][2]);
-                        positions[inst][3] = 0;
-                        bool sp = haiters[inst]->setPosition(positions[inst]);
-                        if(!sp)
-                        {
-                            haiters[inst].reset();
-                            vaiters[inst].reset();
-                            hciters[inst].reset();
-                            vciters[inst].reset();
-                            numClosed++;
-                        }
-                        else
-                        {
-                            vaiters[inst]->setPosition(positions[inst]);
-                            hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                            vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
-                        }
-                    }
-                }
-            }
-        }
-        return output.finalize();
-    }
+//    shared_ptr<Array> preFlatten(shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
+//    {
+//        AttributeDesc const& attrDesc = inputArray->getArrayDesc().getAttributes()[0];
+//        ArenaPtr operatorArena = this->getArena();
+//        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
+//        AttributeComparator cmp (attrDesc.getType());
+//        MemoryHashTable mht(cmp, hashArena);
+//        bool exhausted = false;
+//        size_t const maxTableBytes = 128 * 1024 * 1024;
+//        StateWriter spillover (attrDesc.getType(), 1024*1024, query);
+//        shared_ptr<ConstArrayIterator> arrayIter(inputArray->getConstIterator(0));
+//        shared_ptr<ConstChunkIterator> chunkIter;
+//        while (!arrayIter->end())
+//        {
+//            chunkIter = arrayIter->getChunk().getConstIterator();
+//            while(! chunkIter->end())
+//            {
+//                Value const& v = chunkIter->getItem();
+//                if (!exhausted)
+//                {
+//                    bool inserted = mht.insert(v);
+//                    if(inserted && mht.usedBytes() > maxTableBytes)
+//                    {
+//                        LOG4CXX_DEBUG(logger, "Table exhausted!");
+//                        mht.dumpStatsToLog();
+//                        exhausted = true;
+//                    }
+//                }
+//                else
+//                {
+//                    uint64_t hash;
+//                    if(!mht.contains(v, hash))
+//                    {
+//                        spillover.writeValue(hash, v);
+//                    }
+//                }
+//                ++(*chunkIter);
+//            }
+//            ++(*arrayIter);
+//        }
+//        MemoryHashTable::const_iterator iter = mht.getIterator();
+//        while( !iter.end() )
+//        {
+//            spillover.writeValue(iter.getCurrentHash(), iter.getCurrentItem());
+//            iter.next();
+//        }
+//        return spillover.finalize();
+//    }
+//
+//    shared_ptr<Array> condense (shared_ptr<Array> const& inputArray, shared_ptr<Query> const& query)
+//    {
+//        shared_ptr<Array> arr = preFlatten(inputArray, query);
+//        SortingAttributeInfos sortingAttributeInfos(2);
+//        sortingAttributeInfos[0].columnNo = 0;
+//        sortingAttributeInfos[0].ascent = true;
+//        sortingAttributeInfos[1].columnNo = 1;
+//        sortingAttributeInfos[1].ascent = true;
+//        const bool preservePositions = false;
+//        SortArray sorter(arr->getArrayDesc(),
+//                         _arena,
+//                         preservePositions,
+//                         1000000);
+//        std::shared_ptr<TupleComparator> tcomp(std::make_shared<TupleComparator>(sortingAttributeInfos, arr->getArrayDesc()));
+//        arr = sorter.getSortedArray(arr, query, tcomp);
+//        MergeWriter merger(inputArray->getArrayDesc().getAttributes()[0].getType(), 1000000, query);
+//        shared_ptr<ConstArrayIterator> haiter = arr->getConstIterator(0);
+//        shared_ptr<ConstArrayIterator> vaiter = arr->getConstIterator(1);
+//        while(!haiter->end())
+//        {
+//            shared_ptr<ConstChunkIterator> hciter = haiter->getChunk().getConstIterator();
+//            shared_ptr<ConstChunkIterator> vciter = vaiter->getChunk().getConstIterator();
+//            while(!hciter->end())
+//            {
+//                Value const& hash = hciter->getItem();
+//                Value const& val  = vciter->getItem();
+//                merger.writeValue(hash, val);
+//                ++(*hciter);
+//                ++(*vciter);
+//            }
+//            ++(*haiter);
+//            ++(*vaiter);
+//        }
+//        return merger.finalize();
+//    }
+//
+//    shared_ptr<Array> shuffleMerge(shared_ptr<Array>& inputArray, shared_ptr<Query> const& query)
+//    {
+//        TypeId const inputType = inputArray->getArrayDesc().getAttributes()[0].getType();
+//        shared_ptr<Array> redist = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK,
+//                                                                 std::shared_ptr<CoordinateTranslator>(),
+//                                                                 0,
+//                                                                 std::shared_ptr<PartitioningSchemaData>());
+//        AttributeComparator attComp(inputType);
+//        MergeWriter output(inputType, 1000000, query);
+//        size_t const numInstances = query->getInstancesCount();
+//        vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
+//        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
+//        vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
+//        vector<shared_ptr<ConstChunkIterator> > vciters(numInstances);
+//        vector<Coordinates > positions(numInstances);
+//        size_t numClosed = 0;
+//        for(size_t inst =0; inst<numInstances; ++inst)
+//        {
+//            positions[inst].resize(4);
+//            positions[inst][0] = query->getInstanceID();
+//            positions[inst][1] = inst;
+//            positions[inst][2] = 0;
+//            positions[inst][3] = 0;
+//            haiters[inst] = redist->getConstIterator(0);
+//            if(!haiters[inst]->setPosition(positions[inst]))
+//            {
+//                haiters[inst].reset();
+//                vaiters[inst].reset();
+//                hciters[inst].reset();
+//                vciters[inst].reset();
+//                numClosed++;
+//            }
+//            else
+//            {
+//                vaiters[inst] = redist->getConstIterator(1);
+//                vaiters[inst]->setPosition(positions[inst]);
+//                hciters[inst] = haiters[inst]->getChunk().getConstIterator();
+//                vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+//            }
+//        }
+//        while(numClosed < numInstances)
+//        {
+//            bool minHashSet = false;
+//            uint64_t minHash=0;
+//            Value minItem;
+//            for(size_t inst=0; inst<numInstances; ++inst)
+//            {
+//                if(hciters[inst] == 0)
+//                {
+//                    continue;
+//                }
+//                uint64_t hash = hciters[inst]->getItem().getUint64();
+//                Value const& val = vciters[inst]->getItem();
+//                if(!minHashSet || (hash < minHash || (hash == minHash && attComp(val, minItem))))
+//                {
+//                    minHash = hash;
+//                    minItem = val;
+//                    minHashSet = true;
+//                }
+//            }
+//            output.writeValue(minHash, minItem);
+//            for(size_t inst=0; inst<numInstances; ++inst)
+//            {
+//                if(hciters[inst] == 0)
+//                {
+//                    continue;
+//                }
+//                uint64_t hash = hciters[inst]->getItem().getUint64();
+//                Value const& val = vciters[inst]->getItem();
+//                if(hash == minHash && val == minItem)
+//                {
+//                    ++(*hciters[inst]);
+//                    ++(*vciters[inst]);
+//                    if(hciters[inst]->end())
+//                    {
+//                        ++(positions[inst][2]);
+//                        positions[inst][3] = 0;
+//                        bool sp = haiters[inst]->setPosition(positions[inst]);
+//                        if(!sp)
+//                        {
+//                            haiters[inst].reset();
+//                            vaiters[inst].reset();
+//                            hciters[inst].reset();
+//                            vciters[inst].reset();
+//                            numClosed++;
+//                        }
+//                        else
+//                        {
+//                            vaiters[inst]->setPosition(positions[inst]);
+//                            hciters[inst] = haiters[inst]->getChunk().getConstIterator();
+//                            vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+//                        }
+//                    }
+//                }
+//            }
+//        }
+//        return output.finalize();
+//    }
 
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
-        shared_ptr<Array> result = condense(inputArrays[0], query);
-        result = shuffleMerge(result, query);
-        return result;
+        grouped_aggregate::Settings settings(inputArrays[0]->getArrayDesc(), _parameters, true, query);
+        AttributeID const groupAttribute = settings.getGroupAttributeId();
+        AttributeID const aggregatedAttribute = settings.getInputAttributeId();
+        AttributeComparator comparator( settings.getGroupAttributeType());
+        ArenaPtr operatorArena = this->getArena();
+        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
+        MemoryHashTable mht(comparator, hashArena);
+        AggregatePtr agg = settings.cloneAggregate();
+        shared_ptr<ConstArrayIterator> gaiter(inputArrays[0]->getConstIterator(settings.getGroupAttributeId()));
+        shared_ptr<ConstArrayIterator> iaiter(inputArrays[0]->getConstIterator(settings.getInputAttributeId()));
+        shared_ptr<ConstChunkIterator> gciter, iciter;
+        while(!gaiter->end())
+        {
+            gciter=gaiter->getChunk().getConstIterator();
+            iciter=iaiter->getChunk().getConstIterator();
+            while(!gciter->end())
+            {
+                mht.insert(gciter->getItem(), iciter->getItem(), agg);
+                ++(*gciter);
+                ++(*iciter);
+            }
+            ++(*gaiter);
+            ++(*iaiter);
+        }
+        mht.dumpStatsToLog();
+        mht.sortem();
+
+
+
+
+
+
+
+        MergeWriter writer(settings.getGroupAttributeType(), settings.getStateType(), 1000000, query);
+        MemoryHashTable::const_iterator iter = mht.getIterator();
+        while(!iter.end())
+        {
+            writer.writeState(iter.getCurrentHash(), iter.getCurrentGroup(), iter.getCurrentState(), agg);
+            iter.next();
+        }
+        return writer.finalize();
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");
