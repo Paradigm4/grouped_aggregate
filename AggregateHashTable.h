@@ -22,7 +22,7 @@ using scidb::SortArray;
 using std::shared_ptr;
 using std::dynamic_pointer_cast;
 
-static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.distinct"));
+static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.aht"));
 
 // MurmurHash2, 64-bit versions, by Austin Appleby
 // From https://sites.google.com/site/murmurhash/
@@ -96,6 +96,7 @@ public:
     using super::end;
     using super::empty;
     using super::const_iterator;
+    using super::size;
 
     ValueChain(ArenaPtr const& arena, AttributeComparator const& comparator):
         super(arena.get(), comparator)
@@ -161,9 +162,13 @@ public:
     ~HashBucket()
     {}
 
-    ssize_t insert(ArenaPtr const& arena, AttributeComparator const& comparator, uint64_t hash, Value const& group, Value const& item, AggregatePtr& aggregate)
+    ssize_t insert(ArenaPtr const& arena, AttributeComparator const& comparator, uint64_t hash, Value const& group, Value const& item, AggregatePtr& aggregate, bool& newHash)
     {
         ValueChain& v = super::insert(std::make_pair(hash, ValueChain(arena, comparator))).first->second;
+        if (v.empty())
+        {
+            newHash = true;
+        }
         return v.insert(group, item, aggregate);
     }
 
@@ -216,11 +221,44 @@ public:
         HashBucket& bucket = _data[bucketNo];
         if ( bucket.empty())
         {
-            _hashes.push_back(hash);
             ++_numUsedBuckets;
         }
-       _usedValueBytes += bucket.insert(_arena, _comparator, hash, group, item, aggregate);
+        bool newHash = false;;
+        _usedValueBytes += bucket.insert(_arena, _comparator, hash, group, item, aggregate, newHash);
+        if(newHash)
+        {
+            _hashes.push_back(hash);
+        }
     }
+
+    size_t countGroups()
+    {
+        size_t result = 0;
+//        for(size_t i =0; i<_hashes.size(); ++i)
+//        {
+//            uint64_t hash = _hashes[i];
+//            uint64_t bucketNo = hash % NUM_BUCKETS;
+//            HashBucket& bucket = _data[bucketNo];
+//            ValueChain& v = bucket.find(hash)->second;
+//            result += v.size();
+//        }
+        for(size_t i =0; i<_data.size(); ++i)
+        {
+            HashBucket& bucket = _data[i];
+            if ( !bucket.empty())
+            {
+                HashBucket::const_iterator iter = bucket.begin();
+                while(iter!=bucket.end())
+                {
+                    ValueChain const& v = iter->second;
+                    result+= v.size();
+                    ++(iter);
+                }
+            }
+        }
+        return result;
+    }
+
 
     /**
      * @param[out] hash computes the hash of group as a side-effect

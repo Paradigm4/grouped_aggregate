@@ -250,7 +250,7 @@ private:
     void writeCurrent()
     {
         //gonna do a write, then!
-        while(_curHash.getUint64() > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
+        while(_currentBreak < _numInstances - 1 && _curHash.getUint64() > _hashBreaks[_currentBreak] )
         {
             ++_currentBreak;
         }
@@ -434,11 +434,14 @@ public:
             ++(*gaiter);
             ++(*iaiter);
         }
+        size_t count =0;
         while(!ahtIter.end())
         {
             mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
             ahtIter.next();
+            ++count;
         }
+        LOG4CXX_DEBUG(logger, "COUNT: "<<count);
         arr = mergeWriter.finalize();
         arr = redistributeToRandomAccess(arr, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
         MergeWriter<true> output(settings.getGroupAttributeType(), settings.getResultType(), 1000000, query, agg);
@@ -516,7 +519,7 @@ public:
                     ++(*vciters[inst]);
                     if(hciters[inst]->end())
                     {
-                        positions[inst][2] = positions[inst][2] + 10000000; //TODO: setting-ize
+                        positions[inst][2] = positions[inst][2] + 1000000; //TODO: setting-ize
                         bool sp = haiters[inst]->setPosition(positions[inst]);
                         if(!sp)
                         {
