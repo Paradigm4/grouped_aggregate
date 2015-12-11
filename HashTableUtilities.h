@@ -193,6 +193,9 @@ private:
 public:
     static size_t const NUM_BUCKETS      = 1000037;
 
+    /**
+     * Make an empty one
+     */
     AggregateHashTable(AttributeComparator const& comparator, ArenaPtr const& arena):
         _data(arena.get(), NUM_BUCKETS, HashBucket(arena)),
         _arena(arena),
@@ -202,6 +205,10 @@ public:
         _usedValueBytes(0)
     {}
 
+    /**
+     * Add a value for aggregation
+     * TODO: make aggregate a data member?
+     */
     void insert(Value const& group, Value const& item, AggregatePtr& aggregate)
     {
         uint64_t hash = hashValue(group);
@@ -215,6 +222,10 @@ public:
        _usedValueBytes += bucket.insert(_arena, _comparator, hash, group, item, aggregate);
     }
 
+    /**
+     * @param[out] hash computes the hash of group as a side-effect
+     * @return true if the table contains the group, false otherwise
+     */
     bool contains(Value const& group, uint64_t& hash) const
     {
         hash = hashValue(group);
@@ -222,9 +233,23 @@ public:
         return _data[bucketNo].contains(hash, group);
     }
 
+    /**
+     * @return the total amount of bytes used by the structure
+     */
     size_t usedBytes() const
     {
         return _arena->allocated() + ( _usedValueBytes > 0 ? _usedValueBytes : 0);
+    }
+
+    /**
+     * Sort the hash keys in the table. A subsequent call to getIterator shall return an iterator
+     * that will iterate over the data in the order of increasing hash, then increasing group.
+     * If this is not called, the iterator will return over the hashes in arbitrary order.
+     * This is a lot easier than dumping the thing into an array and sorting that.
+     */
+    void sortKeys()
+    {
+        std::sort(_hashes.begin(), _hashes.end());
     }
 
     class const_iterator
@@ -237,6 +262,9 @@ public:
         ValueChain::const_iterator _chainIter;
 
     public:
+        /**
+         * To get one, call AggregateHashTable::getIterator
+         */
         const_iterator(mgd::vector <HashBucket> const& data,
                        mgd::vector<size_t> const& hashes):
           _data(data),
@@ -245,6 +273,9 @@ public:
             restart();
         }
 
+        /**
+         * Set the iterator at the first hash in the table
+         */
         void restart()
         {
             _hashIter = _hashes.begin();
@@ -257,11 +288,17 @@ public:
             }
         }
 
+        /**
+         * @return true if the iterator has no more items, false otherwise
+         */
         bool end() const
         {
             return _hashIter == _hashes.end();
         }
 
+        /**
+         * advance the iterator
+         */
         void next()
         {
             if (end())
@@ -283,6 +320,7 @@ public:
             }
         }
 
+        //GETTERS
         uint64_t getCurrentHash() const
         {
             if (end())
@@ -310,11 +348,6 @@ public:
             return _chainIter->second;
         }
     };
-
-    void sortKeys()
-    {
-        std::sort(_hashes.begin(), _hashes.end());
-    }
 
     const_iterator getIterator() const
     {
