@@ -57,7 +57,7 @@ all: libgrouped_aggregate.so
 clean:
 	rm -rf *.so *.o
 
-libgrouped_aggregate.so: $(SRCS) HashTableUtilities.h
+libgrouped_aggregate.so: $(SRCS) AggregateHashTable.h GroupedAggregateSettings.h 
 	@if test ! -d "$(SCIDB)"; then echo  "Error. Try:\n\nmake SCIDB=<PATH TO SCIDB INSTALL PATH>"; exit 1; fi
 	$(CXX) $(CCFLAGS) $(INC) -o LogicalGroupedAggregate.o -c LogicalGroupedAggregate.cpp
 	$(CXX) $(CCFLAGS) $(INC) -o PhysicalGroupedAggregate.o -c PhysicalGroupedAggregate.cpp

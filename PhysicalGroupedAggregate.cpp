@@ -26,7 +26,6 @@
 #include <array/SortArray.h>
 
 #include "query/Operator.h"
-#include "HashTableUtilities.h"
 #include <array/SortArray.h>
 
 #include <stdio.h>
@@ -35,6 +34,7 @@
 #include <memory>
 #include <cstddef>
 
+#include "AggregateHashTable.h"
 #include "GroupedAggregateSettings.h"
 
 // Logger for operator. static to prevent visibility of variable outside of file
