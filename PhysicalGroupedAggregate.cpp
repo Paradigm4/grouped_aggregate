@@ -130,7 +130,7 @@ public:
     }
 };
 
-template <bool COMPUTE_FINAL_RESULT = false>
+template <bool FINAL_RESULT = false>
 class MergeWriter : public boost::noncopyable
 {
 private:
@@ -150,83 +150,35 @@ private:
     Value    _curGroup;
     Value    _curState;
 
-    void writeCurrent()
-    {
-        //gonna do a write, then!
-        while(_curHash.getUint64() > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
-        {
-            ++_currentBreak;
-        }
-        bool newChunk = false;
-        if ( static_cast<Coordinate>(_currentBreak) != _outputPosition[0])
-        {
-            _outputPosition[0] = _currentBreak;
-            _outputPosition[2] = 0;
-            _outputPosition[3] = 0;
-            newChunk = true;
-        }
-        else if(_outputPosition[3] % _chunkSize == 0)
-        {
-            ++(_outputPosition[2]);
-            _outputPosition[3] = 0;
-            newChunk = true;
-        }
-        if( newChunk )
-        {
-            for(AttributeID i=0; i<_numAttributes; ++i)
-            {
-                if(_outputChunkIterators[i].get())
-                {
-                    _outputChunkIterators[i]->flush();
-                }
-                _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
-                                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
-            }
-        }
-        _outputChunkIterators[0]->setPosition(_outputPosition);
-        _outputChunkIterators[0]->writeItem(_curHash);
-        _outputChunkIterators[1]->setPosition(_outputPosition);
-        _outputChunkIterators[1]->writeItem(_curGroup);
-        _outputChunkIterators[2]->setPosition(_outputPosition);
-        if(COMPUTE_FINAL_RESULT)
-        {
-            Value result;
-            _aggregate->finalResult(result, _curState);
-            _outputChunkIterators[2]->writeItem(result);
-        }
-        else
-        {
-            _outputChunkIterators[2]->writeItem(_curState);
-        }
-        ++(_outputPosition[3]);
-    }
-
 public:
-    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& stateType, size_t const chunkSize, size_t const numInstances)
+    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& stateType, size_t const chunkSize, size_t const numInstances, bool final_result)
     {
         Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "group",  groupType,     0, 0));
-        outputAttributes.push_back( AttributeDesc(2, "result",  stateType,     AttributeDesc::IS_NULLABLE, 0));
+        size_t i =0;
+        if(!final_result)
+        {
+            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
+        }
+        outputAttributes.push_back( AttributeDesc(i++, "group",  groupType,     0, 0));
+        outputAttributes.push_back( AttributeDesc(i++, "result",  stateType,     AttributeDesc::IS_NULLABLE, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
         outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
-        outputDimensions.push_back(DimensionDesc("value_no",        0, chunkSize-1, chunkSize, 0));
+        outputDimensions.push_back(DimensionDesc("value_no",        0, CoordinateBounds::getMax(), chunkSize, 0));
         return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
     }
 
     MergeWriter(TypeId const& attributeType, TypeId const& stateType, size_t const chunkSize, shared_ptr<Query> const& query, AggregatePtr& aggregate):
-        _output(make_shared<MemArray>(makeSchema(attributeType, stateType, chunkSize, query->getInstancesCount()), query)),
-        _numAttributes(3),
+        _output(make_shared<MemArray>(makeSchema(attributeType, stateType, chunkSize, query->getInstancesCount(), FINAL_RESULT), query)),
+        _numAttributes(FINAL_RESULT ? 2 : 3),
         _chunkSize(chunkSize),
         _numInstances(query->getInstancesCount()),
         _myInstanceId(query->getInstanceID()),
         _aggregate(aggregate),
         _hashBreaks(_numInstances-1,0),
         _query(query),
-        _outputPosition(4, 0),
+        _outputPosition(3, 0),
         _outputArrayIterators(_numAttributes),
         _outputChunkIterators(_numAttributes)
     {
@@ -243,8 +195,7 @@ public:
         _currentBreak = 0;
         _outputPosition[0] = 0;
         _outputPosition[1] = _myInstanceId;
-        _outputPosition[2] = -1;
-        _outputPosition[3] = 0;
+        _outputPosition[2] = 0;
         for(AttributeID i =0; i<_numAttributes; ++i)
         {
             _outputArrayIterators[i] = _output->getIterator(i);
@@ -295,6 +246,62 @@ public:
         _aggregate->mergeIfNeeded(_curState, state);
     }
 
+private:
+    void writeCurrent()
+    {
+        //gonna do a write, then!
+        while(_curHash.getUint64() > _hashBreaks[_currentBreak] && _currentBreak < _numInstances - 1)
+        {
+            ++_currentBreak;
+        }
+        bool newChunk = false;
+        if ( static_cast<Coordinate>(_currentBreak) != _outputPosition[0])
+        {
+            _outputPosition[0] = _currentBreak;
+            _outputPosition[2] = 0;
+            newChunk = true;
+        }
+        else if(_outputPosition[2] % _chunkSize == 0)
+        {
+            newChunk = true;
+        }
+        if( newChunk )
+        {
+            for(AttributeID i=0; i<_numAttributes; ++i)
+            {
+                if(_outputChunkIterators[i].get())
+                {
+                    _outputChunkIterators[i]->flush();
+                }
+                _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
+                                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
+            }
+        }
+        size_t i = 0;
+        if(!FINAL_RESULT)
+        {
+            _outputChunkIterators[i]->setPosition(_outputPosition);
+            _outputChunkIterators[i]->writeItem(_curHash);
+            i++;
+        }
+        _outputChunkIterators[i]->setPosition(_outputPosition);
+        _outputChunkIterators[i]->writeItem(_curGroup);
+        i++;
+        _outputChunkIterators[i]->setPosition(_outputPosition);
+        if(FINAL_RESULT)
+        {
+            Value result;
+            _aggregate->finalResult(result, _curState);
+            _outputChunkIterators[i]->writeItem(result);
+        }
+        else
+        {
+            _outputChunkIterators[i]->writeItem(_curState);
+        }
+        ++(_outputPosition[2]);
+    }
+
+public:
     shared_ptr<Array> finalize()
     {
         if(_curHash.getMissingReason() != 0)
@@ -446,11 +453,10 @@ public:
         size_t numClosed = 0;
         for(size_t inst =0; inst<numInstances; ++inst)
         {
-            positions[inst].resize(4);
+            positions[inst].resize(3);
             positions[inst][0] = query->getInstanceID();
             positions[inst][1] = inst;
             positions[inst][2] = 0;
-            positions[inst][3] = 0;
             haiters[inst] = arr->getConstIterator(0);
             if(!haiters[inst]->setPosition(positions[inst]))
             {
@@ -510,8 +516,7 @@ public:
                     ++(*vciters[inst]);
                     if(hciters[inst]->end())
                     {
-                        ++(positions[inst][2]);
-                        positions[inst][3] = 0;
+                        positions[inst][2] = positions[inst][2] + 10000000; //TODO: setting-ize
                         bool sp = haiters[inst]->setPosition(positions[inst]);
                         if(!sp)
                         {
