@@ -180,7 +180,7 @@ public:
 };
 
 //XXX: do not inherit
-class MemoryHashTable
+class AggregateHashTable
 {
 private:
     mgd::vector < HashBucket >_data;
@@ -193,7 +193,7 @@ private:
 public:
     static size_t const NUM_BUCKETS      = 1000037;
 
-    MemoryHashTable(AttributeComparator const& comparator, ArenaPtr const& arena):
+    AggregateHashTable(AttributeComparator const& comparator, ArenaPtr const& arena):
         _data(arena.get(), NUM_BUCKETS, HashBucket(arena)),
         _arena(arena),
         _hashes(arena.get()),
@@ -215,11 +215,11 @@ public:
        _usedValueBytes += bucket.insert(_arena, _comparator, hash, group, item, aggregate);
     }
 
-    bool contains(Value const& item, uint64_t& hash) const
+    bool contains(Value const& group, uint64_t& hash) const
     {
-        hash = hashValue(item);
+        hash = hashValue(group);
         uint64_t bucketNo = hash % NUM_BUCKETS;
-        return _data[bucketNo].contains(hash, item);
+        return _data[bucketNo].contains(hash, group);
     }
 
     size_t usedBytes() const
@@ -251,7 +251,7 @@ public:
             if(_hashIter != _hashes.end())
             {
                 size_t const hash = (*_hashIter);
-                HashBucket const& b = _data[hash % MemoryHashTable::NUM_BUCKETS];
+                HashBucket const& b = _data[hash % AggregateHashTable::NUM_BUCKETS];
                 _bucketIter = b.find(hash);
                 _chainIter = _bucketIter->second.begin();
             }
@@ -277,7 +277,7 @@ public:
                     return;
                 }
                 size_t const hash = (*_hashIter);
-                HashBucket const& b = _data[hash % MemoryHashTable::NUM_BUCKETS];
+                HashBucket const& b = _data[hash % AggregateHashTable::NUM_BUCKETS];
                 _bucketIter = b.find(hash);
                 _chainIter = _bucketIter->second.begin();
             }
@@ -311,12 +311,12 @@ public:
         }
     };
 
-    void sortem()
+    void sortKeys()
     {
         std::sort(_hashes.begin(), _hashes.end());
     }
 
-    const_iterator getIterator(bool sortem = false)
+    const_iterator getIterator() const
     {
         return const_iterator(_data, _hashes);
     }

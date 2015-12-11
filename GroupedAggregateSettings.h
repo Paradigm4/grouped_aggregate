@@ -22,6 +22,7 @@ private:
     AttributeID const _groupAttributeId;
     string const _groupAttributeName;
     TypeId const _groupAttributeType;
+    TypeId _inputAttributeType;
     TypeId _stateType;
     TypeId _resultType;
     AttributeID  _inputAttributeId;
@@ -40,7 +41,6 @@ public:
         _aggregate = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) operatorParameters[1], inputSchema.getAttributes(), &_inputAttributeId, &_outputAttributeName);
         _stateType = _aggregate->getStateType().typeId();
         _resultType = _aggregate->getResultType().typeId();
-
         if(_inputAttributeId == INVALID_ATTRIBUTE_ID)
         {
             _inputAttributeId = _groupAttributeId;
@@ -49,6 +49,7 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
         }
+        _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
     }
 
     AttributeID getGroupAttributeId()
@@ -64,6 +65,11 @@ public:
     TypeId const& getGroupAttributeType()
     {
         return _groupAttributeType;
+    }
+
+    TypeId const& getInputAttributeType()
+    {
+        return _inputAttributeType;
     }
 
     AttributeID getInputAttributeId()
