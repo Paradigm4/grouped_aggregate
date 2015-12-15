@@ -20,6 +20,7 @@ namespace scidb
 {
 
 using namespace std;
+using grouped_aggregate::Settings;
 
 class LogicalGroupedAggregate : public LogicalOperator
 {
@@ -38,17 +39,7 @@ public:
     {
         size_t const numInstances = query->getInstancesCount();
         grouped_aggregate::Settings settings(schemas[0], _parameters, true, query);
-        Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "group",  settings.getGroupAttributeType(), 0, 0));
-        outputAttributes.push_back( AttributeDesc(2, "state",  settings.getStateType(), AttributeDesc::IS_NULLABLE, 0));
-        outputAttributes = addEmptyTagAttribute(outputAttributes);
-        Dimensions outputDimensions;
-        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("block_no",        0, CoordinateBounds::getMax(), 1, 0));
-        outputDimensions.push_back(DimensionDesc("value_no",        0, 1000000-1, 1000000, 0));
-        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
+        return settings.makeSchema(Settings::FINAL, schemas[0].getName());
     }
 };
 

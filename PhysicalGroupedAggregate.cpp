@@ -47,6 +47,8 @@ using namespace std;
 namespace scidb
 {
 
+using grouped_aggregate::Settings;
+
 namespace grouped_aggregate
 {
 
@@ -130,7 +132,7 @@ public:
     }
 };
 
-template <bool FINAL_RESULT = false>
+template <Settings::SchemaType SCHEMA_TYPE>
 class MergeWriter : public boost::noncopyable
 {
 private:
@@ -151,31 +153,13 @@ private:
     Value    _curState;
 
 public:
-    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& stateType, size_t const chunkSize, size_t const numInstances, bool final_result)
-    {
-        Attributes outputAttributes;
-        size_t i =0;
-        if(!final_result)
-        {
-            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
-        }
-        outputAttributes.push_back( AttributeDesc(i++, "group",  groupType,     0, 0));
-        outputAttributes.push_back( AttributeDesc(i++, "result",  stateType,     AttributeDesc::IS_NULLABLE, 0));
-        outputAttributes = addEmptyTagAttribute(outputAttributes);
-        Dimensions outputDimensions;
-        outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("src_instance_id", 0, numInstances-1, 1, 0));
-        outputDimensions.push_back(DimensionDesc("value_no",        0, CoordinateBounds::getMax(), chunkSize, 0));
-        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
-    }
-
-    MergeWriter(TypeId const& attributeType, TypeId const& stateType, size_t const chunkSize, shared_ptr<Query> const& query, AggregatePtr& aggregate):
-        _output(make_shared<MemArray>(makeSchema(attributeType, stateType, chunkSize, query->getInstancesCount(), FINAL_RESULT), query)),
-        _numAttributes(FINAL_RESULT ? 2 : 3),
-        _chunkSize(chunkSize),
+    MergeWriter(Settings const& settings, shared_ptr<Query> const& query, string const name = ""):
+        _output(make_shared<MemArray>(settings.makeSchema(SCHEMA_TYPE, name), query)),
+        _numAttributes(SCHEMA_TYPE == Settings::FINAL ? 2 : 3),
+        _chunkSize(SCHEMA_TYPE == Settings::MERGE ? settings.getMergeChunkSize() : settings.getOutputChunkSize() ),
         _numInstances(query->getInstancesCount()),
         _myInstanceId(query->getInstanceID()),
-        _aggregate(aggregate),
+        _aggregate(settings.cloneAggregate()),
         _hashBreaks(_numInstances-1,0),
         _query(query),
         _outputPosition(3, 0),
@@ -278,7 +262,7 @@ private:
             }
         }
         size_t i = 0;
-        if(!FINAL_RESULT)
+        if(SCHEMA_TYPE != Settings::FINAL)
         {
             _outputChunkIterators[i]->setPosition(_outputPosition);
             _outputChunkIterators[i]->writeItem(_curHash);
@@ -288,7 +272,7 @@ private:
         _outputChunkIterators[i]->writeItem(_curGroup);
         i++;
         _outputChunkIterators[i]->setPosition(_outputPosition);
-        if(FINAL_RESULT)
+        if(SCHEMA_TYPE == Settings::FINAL)
         {
             Value result;
             _aggregate->finalResult(result, _curState);
@@ -409,7 +393,7 @@ public:
         iaiter = arr->getConstIterator(2);
         shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
-        MergeWriter<false> mergeWriter(settings.getGroupAttributeType(), settings.getStateType(), 1000000, query, agg);
+        MergeWriter<Settings::MERGE> mergeWriter(settings, query);
         while(!haiter->end())
         {
             hciter = haiter->getChunk().getConstIterator();
@@ -444,7 +428,7 @@ public:
         LOG4CXX_DEBUG(logger, "COUNT: "<<count);
         arr = mergeWriter.finalize();
         arr = redistributeToRandomAccess(arr, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
-        MergeWriter<true> output(settings.getGroupAttributeType(), settings.getResultType(), 1000000, query, agg);
+        MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
         vector<shared_ptr<ConstArrayIterator> > gaiters(numInstances);

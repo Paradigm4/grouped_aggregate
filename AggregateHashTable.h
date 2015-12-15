@@ -231,35 +231,6 @@ public:
         }
     }
 
-    size_t countGroups()
-    {
-        size_t result = 0;
-//        for(size_t i =0; i<_hashes.size(); ++i)
-//        {
-//            uint64_t hash = _hashes[i];
-//            uint64_t bucketNo = hash % NUM_BUCKETS;
-//            HashBucket& bucket = _data[bucketNo];
-//            ValueChain& v = bucket.find(hash)->second;
-//            result += v.size();
-//        }
-        for(size_t i =0; i<_data.size(); ++i)
-        {
-            HashBucket& bucket = _data[i];
-            if ( !bucket.empty())
-            {
-                HashBucket::const_iterator iter = bucket.begin();
-                while(iter!=bucket.end())
-                {
-                    ValueChain const& v = iter->second;
-                    result+= v.size();
-                    ++(iter);
-                }
-            }
-        }
-        return result;
-    }
-
-
     /**
      * @param[out] hash computes the hash of group as a side-effect
      * @return true if the table contains the group, false otherwise
