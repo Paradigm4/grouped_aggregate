@@ -418,14 +418,11 @@ public:
             ++(*gaiter);
             ++(*iaiter);
         }
-        size_t count =0;
         while(!ahtIter.end())
         {
             mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
             ahtIter.next();
-            ++count;
         }
-        LOG4CXX_DEBUG(logger, "COUNT: "<<count);
         arr = mergeWriter.finalize();
         arr = redistributeToRandomAccess(arr, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
