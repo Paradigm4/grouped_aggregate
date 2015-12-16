@@ -150,7 +150,7 @@ public:
             outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
         }
         outputAttributes.push_back( AttributeDesc(i++, _groupAttributeName,  _groupAttributeType, 0, 0));
-        outputAttributes.push_back( AttributeDesc(i++, _outputAttributeName, _outputAttributeType, AttributeDesc::IS_NULLABLE, 0));
+        outputAttributes.push_back( AttributeDesc(i++, _outputAttributeName, type == MERGE ? _stateType : _outputAttributeType, AttributeDesc::IS_NULLABLE, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, _numInstances-1, 1, 0));
