@@ -174,11 +174,9 @@ public:
         _curGroup.setNull(0);
         _curState.setNull(0);
         uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
-        LOG4CXX_DEBUG(logger, "BREAK_INTERVAL: "<<break_interval)
         for(size_t i=0; i<_numInstances-1; ++i)
         {
             _hashBreaks[i] = break_interval * (i+1);
-            LOG4CXX_DEBUG(logger, "HASH_BREAKS: "<<i<<" "<<_hashBreaks[i])
         }
         _currentBreak = 0;
         if(SCHEMA_TYPE == Settings::MERGE)
@@ -346,15 +344,14 @@ public:
         return RedistributeContext(psUndefined);
     }
 
-    shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query)
+    shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
     {
         SortingAttributeInfos sortingAttributeInfos(2);
         sortingAttributeInfos[0].columnNo = 0;
         sortingAttributeInfos[0].ascent = true;
         sortingAttributeInfos[1].columnNo = 1;
         sortingAttributeInfos[1].ascent = true;
-        const bool preservePositions = false;
-        SortArray sorter(input->getArrayDesc(), _arena, preservePositions, 1000000); //TODO:setting-ize
+        SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, tcomp);
     }
@@ -371,7 +368,7 @@ public:
         shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeId()));
         shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
         shared_ptr<ConstChunkIterator> gciter, iciter;
-        FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), 1000000, query);
+        FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), settings.getSpilloverChunkSize(), query);
         size_t const maxTableSize = 150*1024*1024;
         DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
         while(!gaiter->end())
@@ -415,7 +412,7 @@ public:
         gciter.reset();
         iciter.reset();
         shared_ptr<Array> arr = flatWriter.finalize();
-        arr = flatSort(arr, query);
+        arr = flatSort(arr, query, settings);
         aht.sortKeys();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
         gaiter = arr->getConstIterator(1);
@@ -540,7 +537,7 @@ public:
                     ++(*vciters[inst]);
                     if(hciters[inst]->end())
                     {
-                        positions[inst][2] = positions[inst][2] + 1000000; //TODO: setting-ize
+                        positions[inst][2] = positions[inst][2] + settings.getMergeChunkSize();
                         bool sp = haiters[inst]->setPosition(positions[inst]);
                         if(!sp)
                         {
