@@ -55,7 +55,7 @@ namespace grouped_aggregate
 class FlatWriter : public boost::noncopyable
 {
 private:
-    shared_ptr<Array> const _output;
+    shared_ptr<Array> _output;
     size_t const _numAttributes;
     size_t const _chunkSize;
     shared_ptr<Query> _query;
@@ -128,7 +128,9 @@ public:
             _outputChunkIterators[i].reset();
             _outputArrayIterators[i].reset();
         }
-        return _output;
+        shared_ptr<Array> result = _output;
+        _output.reset();
+        return result;
     }
 };
 
@@ -136,7 +138,7 @@ template <Settings::SchemaType SCHEMA_TYPE>
 class MergeWriter : public boost::noncopyable
 {
 private:
-    shared_ptr<Array> const _output;
+    shared_ptr<Array> _output;
     size_t const _numAttributes;
     size_t const _chunkSize;
     size_t const _numInstances;
@@ -146,6 +148,7 @@ private:
     size_t _currentBreak;
     shared_ptr<Query> _query;
     Coordinates _outputPosition;
+    Coordinate& _outputValueNo;
     vector<shared_ptr<ArrayIterator> > _outputArrayIterators;
     vector<shared_ptr<ChunkIterator> > _outputChunkIterators;
     Value    _curHash;
@@ -155,14 +158,15 @@ private:
 public:
     MergeWriter(Settings const& settings, shared_ptr<Query> const& query, string const name = ""):
         _output(make_shared<MemArray>(settings.makeSchema(SCHEMA_TYPE, name), query)),
-        _numAttributes(SCHEMA_TYPE == Settings::FINAL ? 2 : 3),
+        _numAttributes(SCHEMA_TYPE == Settings:: FINAL ? 2 : 3),
         _chunkSize(SCHEMA_TYPE == Settings::MERGE ? settings.getMergeChunkSize() : settings.getOutputChunkSize() ),
         _numInstances(query->getInstancesCount()),
         _myInstanceId(query->getInstanceID()),
         _aggregate(settings.cloneAggregate()),
         _hashBreaks(_numInstances-1,0),
         _query(query),
-        _outputPosition(3, 0),
+        _outputPosition( SCHEMA_TYPE == Settings::FINAL ? 2 : 3, 0),
+        _outputValueNo(  SCHEMA_TYPE == Settings::FINAL ? _outputPosition[1] : _outputPosition[2]),
         _outputArrayIterators(_numAttributes),
         _outputChunkIterators(_numAttributes)
     {
@@ -177,9 +181,17 @@ public:
             LOG4CXX_DEBUG(logger, "HASH_BREAKS: "<<i<<" "<<_hashBreaks[i])
         }
         _currentBreak = 0;
-        _outputPosition[0] = 0;
-        _outputPosition[1] = _myInstanceId;
-        _outputPosition[2] = 0;
+        if(SCHEMA_TYPE == Settings::MERGE)
+        {
+            _outputPosition[0] = 0;
+            _outputPosition[1] = _myInstanceId;
+            _outputPosition[2] = 0;
+        }
+        else
+        {
+            _outputPosition[0] = _myInstanceId;
+            _outputPosition[1] = 0;
+        }
         for(AttributeID i =0; i<_numAttributes; ++i)
         {
             _outputArrayIterators[i] = _output->getIterator(i);
@@ -234,18 +246,18 @@ private:
     void writeCurrent()
     {
         //gonna do a write, then!
-        while(_currentBreak < _numInstances - 1 && _curHash.getUint64() > _hashBreaks[_currentBreak] )
+        while( SCHEMA_TYPE == Settings::MERGE && _currentBreak < _numInstances - 1 && _curHash.getUint64() > _hashBreaks[_currentBreak] )
         {
             ++_currentBreak;
         }
         bool newChunk = false;
-        if ( static_cast<Coordinate>(_currentBreak) != _outputPosition[0])
+        if ( SCHEMA_TYPE == Settings::MERGE && static_cast<Coordinate>(_currentBreak) != _outputPosition[0])
         {
             _outputPosition[0] = _currentBreak;
             _outputPosition[2] = 0;
             newChunk = true;
         }
-        else if(_outputPosition[2] % _chunkSize == 0)
+        else if( _outputValueNo % _chunkSize == 0)
         {
             newChunk = true;
         }
@@ -282,7 +294,7 @@ private:
         {
             _outputChunkIterators[i]->writeItem(_curState);
         }
-        ++(_outputPosition[2]);
+        ++_outputValueNo;
     }
 
 public:
@@ -301,7 +313,9 @@ public:
             _outputChunkIterators[i].reset();
             _outputArrayIterators[i].reset();
         }
-        return _output;
+        shared_ptr<Array> result = _output;
+        _output.reset();
+        return result;
     }
 };
 
@@ -332,9 +346,21 @@ public:
         return RedistributeContext(psUndefined);
     }
 
-    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+    shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query)
     {
-        grouped_aggregate::Settings settings(inputArrays[0]->getArrayDesc(), _parameters, true, query);
+        SortingAttributeInfos sortingAttributeInfos(2);
+        sortingAttributeInfos[0].columnNo = 0;
+        sortingAttributeInfos[0].ascent = true;
+        sortingAttributeInfos[1].columnNo = 1;
+        sortingAttributeInfos[1].ascent = true;
+        const bool preservePositions = false;
+        SortArray sorter(input->getArrayDesc(), _arena, preservePositions, 1000000); //TODO:setting-ize
+        shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
+        return sorter.getSortedArray(input, query, tcomp);
+    }
+
+    shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
+    {
         AttributeID const groupAttribute = settings.getGroupAttributeId();
         AttributeID const aggregatedAttribute = settings.getInputAttributeId();
         AttributeComparator comparator( settings.getGroupAttributeType());
@@ -342,11 +368,12 @@ public:
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(comparator, hashArena);
         AggregatePtr agg = settings.cloneAggregate();
-        shared_ptr<ConstArrayIterator> gaiter(inputArrays[0]->getConstIterator(settings.getGroupAttributeId()));
-        shared_ptr<ConstArrayIterator> iaiter(inputArrays[0]->getConstIterator(settings.getInputAttributeId()));
+        shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeId()));
+        shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
         shared_ptr<ConstChunkIterator> gciter, iciter;
         FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), 1000000, query);
         size_t const maxTableSize = 150*1024*1024;
+        DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
         while(!gaiter->end())
         {
             gciter=gaiter->getChunk().getConstIterator();
@@ -355,6 +382,12 @@ public:
             {
                 uint64_t hash;
                 Value const& group = gciter->getItem();
+                if(group.isNull() || isNan(group, dfo))
+                {
+                    ++(*gciter);
+                    ++(*iciter);
+                    continue;
+                }
                 Value const& input = iciter->getItem();
                 if(aht.usedBytes() < maxTableSize)
                 {
@@ -377,17 +410,13 @@ public:
             ++(*gaiter);
             ++(*iaiter);
         }
+        gaiter.reset();
+        iaiter.reset();
+        gciter.reset();
+        iciter.reset();
         shared_ptr<Array> arr = flatWriter.finalize();
+        arr = flatSort(arr, query);
         aht.sortKeys();
-        SortingAttributeInfos sortingAttributeInfos(2);
-        sortingAttributeInfos[0].columnNo = 0;
-        sortingAttributeInfos[0].ascent = true;
-        sortingAttributeInfos[1].columnNo = 1;
-        sortingAttributeInfos[1].ascent = true;
-        const bool preservePositions = false;
-        SortArray sorter(arr->getArrayDesc(), _arena, preservePositions, 1000000);
-        shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, arr->getArrayDesc()));
-        arr = sorter.getSortedArray(arr, query, tcomp);
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
         gaiter = arr->getConstIterator(1);
         iaiter = arr->getConstIterator(2);
@@ -418,13 +447,24 @@ public:
             ++(*gaiter);
             ++(*iaiter);
         }
+        hciter.reset();
+        gciter.reset();
+        iciter.reset();
+        haiter.reset();
+        gaiter.reset();
+        iaiter.reset();
         while(!ahtIter.end())
         {
             mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
             ahtIter.next();
         }
-        arr = mergeWriter.finalize();
-        arr = redistributeToRandomAccess(arr, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
+        return mergeWriter.finalize();
+    }
+
+    shared_ptr<Array> globalMerge(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
+    {
+        inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
+        AttributeComparator comparator( settings.getGroupAttributeType() );
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
@@ -441,7 +481,7 @@ public:
             positions[inst][0] = query->getInstanceID();
             positions[inst][1] = inst;
             positions[inst][2] = 0;
-            haiters[inst] = arr->getConstIterator(0);
+            haiters[inst] = inputArray->getConstIterator(0);
             if(!haiters[inst]->setPosition(positions[inst]))
             {
                 haiters[inst].reset();
@@ -454,9 +494,9 @@ public:
             }
             else
             {
-                gaiters[inst] = arr->getConstIterator(1);
+                gaiters[inst] = inputArray->getConstIterator(1);
                 gaiters[inst]->setPosition(positions[inst]);
-                vaiters[inst] = arr->getConstIterator(2);
+                vaiters[inst] = inputArray->getConstIterator(2);
                 vaiters[inst]->setPosition(positions[inst]);
                 hciters[inst] = haiters[inst]->getChunk().getConstIterator();
                 gciters[inst] = gaiters[inst]->getChunk().getConstIterator();
@@ -525,6 +565,16 @@ public:
             }
         }
         return output.finalize();
+    }
+
+    shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
+    {
+        Settings settings(inputArrays[0]->getArrayDesc(), _parameters, true, query);
+        shared_ptr<Array> array = inputArrays[0];
+        array = localCondense(array, query, settings);
+        array = globalMerge(array, query, settings);
+        return array;
+
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");
