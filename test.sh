@@ -1,0 +1,67 @@
+#!/bin/bash
+
+iquery -anq "remove(foo)" > /dev/null 2>&1
+iquery -anq "remove(a_new)" > /dev/null 2>&1
+iquery -anq "remove(a_old)" > /dev/null 2>&1
+iquery -anq "remove(b_new)" > /dev/null 2>&1
+iquery -anq "remove(b_old)" > /dev/null 2>&1
+iquery -anq "remove(c_new)" > /dev/null 2>&1
+iquery -anq "remove(c_old)" > /dev/null 2>&1
+
+iquery -anq "
+store(
+ apply(
+  build(<val: double null> [i=1:16000000,1000000,0], iif(random()%10=0, null, random() % 100 )),
+  a, iif(random() % 2 = 0, 'abc', 'def'),
+  b, iif(random() % 5 = 0, null, string(i)),
+  c, iif(random() % 10 =0, null, iif(random()%9=0, double(nan), random() % 20 ))
+ ),
+ foo
+)"
+
+time iquery -naq "store(grouped_aggregate(foo, a, var(val)), a_new)"
+time iquery -naq "
+store(
+ redimension(
+  index_lookup(foo as A, uniq(sort(project(foo, a))), A.a, idx), 
+  <a:string null, val_var: double null> [idx=0:*,1000000,0],
+  max(a) as a, var(val)
+ ),
+ a_old
+)"
+
+time iquery -naq "store(grouped_aggregate(foo, b, sum(val)), b_new)"
+time iquery -naq "
+store(
+ redimension(
+  index_lookup(foo as A, uniq(sort(project(foo, b))), A.b, idx), 
+  <b:string null, val_sum: double null> [idx=0:*,1000000,0],
+  max(b) as b, sum(val)
+ ),
+ b_old
+)"
+
+time iquery -naq "store(grouped_aggregate(foo, c, avg(val)), c_new)"
+time iquery -naq "
+store(
+ redimension(
+  index_lookup(foo as A, uniq(sort(project(foo, c))), A.c, idx), 
+  <c:double null, val_avg: double null> [idx=0:*,1000000,0],
+  max(c) as c, avg(val)
+ ),
+ c_old
+)"
+
+iquery -aq "op_count(a_new)" > test.out
+iquery -aq "op_count(a_old)" >> test.out
+iquery -aq "aggregate(apply(join(sort(a_new,a), sort(a_old,a)), z, iif(a_new.val_var=a_old.val_var, 1,0)), sum(z))" >> test.out
+
+iquery -aq "op_count(b_new)" >> test.out
+iquery -aq "op_count(b_old)" >> test.out
+iquery -aq "aggregate(apply(join(sort(b_new,b), sort(b_old,b)), z, iif(b_new.val_sum=b_old.val_sum, 1,0)), sum(z))" >> test.out
+
+
+
+
+
+
