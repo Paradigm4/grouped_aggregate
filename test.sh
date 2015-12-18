@@ -13,7 +13,7 @@ store(
  apply(
   build(<val: double null> [i=1:16000000,1000000,0], iif(random()%10=0, null, random() % 100 )),
   a, iif(random() % 2 = 0, 'abc', 'def'),
-  b, iif(random() % 5 = 0, null, string(i)),
+  b, iif(i % 5 = 0, null, string(i)),
   c, iif(random() % 10 =0, null, iif(random()%9=0, double(nan), random() % 20 ))
  ),
  foo
@@ -45,7 +45,7 @@ time iquery -naq "store(grouped_aggregate(foo, c, avg(val)), c_new)"
 time iquery -naq "
 store(
  redimension(
-  index_lookup(foo as A, uniq(sort(project(foo, c))), A.c, idx), 
+  index_lookup(foo as A, uniq(sort(project(filter(foo, is_nan(c) = false), c))), A.c, idx), 
   <c:double null, val_avg: double null> [idx=0:*,1000000,0],
   max(c) as c, avg(val)
  ),
@@ -60,8 +60,8 @@ iquery -aq "op_count(b_new)" >> test.out
 iquery -aq "op_count(b_old)" >> test.out
 iquery -aq "aggregate(apply(join(sort(b_new,b), sort(b_old,b)), z, iif(b_new.val_sum=b_old.val_sum, 1,0)), sum(z))" >> test.out
 
+iquery -aq "op_count(c_new)" >> test.out
+iquery -aq "op_count(c_old)" >> test.out
+iquery -aq "aggregate(apply(join(sort(c_new,c), sort(c_old,c)), z, iif(c_new.val_avg=c_old.val_avg, 1,0)), sum(z))" >> test.out
 
-
-
-
-
+diff test.out test.expected
