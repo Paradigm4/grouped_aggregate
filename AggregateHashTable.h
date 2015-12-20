@@ -6,6 +6,7 @@
 #include <util/arena/Set.h>
 #include <util/arena/Map.h>
 #include <util/arena/Vector.h>
+#include <util/arena/List.h>
 #include <util/Arena.h>
 #include <array/SortArray.h>
 #include <array/TupleArray.h>
@@ -21,6 +22,7 @@ using scidb::arena::newArena;
 using scidb::SortArray;
 using std::shared_ptr;
 using std::dynamic_pointer_cast;
+
 
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.aht"));
 
@@ -82,153 +84,83 @@ static void EXCEPTION_ASSERT(bool cond)
     }
 }
 
-//XXX: do not inherit
-class ValueChain : private mgd::map<Value, Value, AttributeComparator>
+struct Triplet
 {
-private:
-    typedef mgd::map<Value, Value, AttributeComparator> super;
+    uint64_t hash;
+    Value    group;
+    Value    state;
 
-    ValueChain()
+    Triplet(uint64_t const h, Value const& g):
+      hash(h), group(g)
     {}
-
-public:
-    using super::begin;
-    using super::end;
-    using super::empty;
-    using super::const_iterator;
-    using super::size;
-
-    ValueChain(ArenaPtr const& arena, AttributeComparator const& comparator):
-        super(arena.get(), comparator)
-    {}
-
-    ~ValueChain()
-    {}
-
-    /**
-     * @return the non-arena size change to the structure, after insertion.
-     * The arena.allocated() can be used to track the size of all arena-backed memory,
-     * for the remainder, add up the values returned by this method.
-     * Assumes:
-     * - Value default constructor creates size = 0
-     * - Value with size <= 8 is stored in-body
-     * - Value with size > 8 is allocated, without arena
-     * All true as of 15.7
-     */
-    ssize_t insert(Value const& group, Value const& item, AggregatePtr& aggregate)
-    {
-        Value& state = super::operator [](group);
-        ssize_t groupSizeDelta = 0;
-        ssize_t initialStateSize = state.size();
-        initialStateSize = initialStateSize > 8 ? initialStateSize : 0;
-        if(state.getMissingReason() == 0) //first time
-        {
-            aggregate->initializeState(state);
-            groupSizeDelta = group.size();
-            groupSizeDelta = groupSizeDelta > 8 ? groupSizeDelta : 0;
-        }
-        aggregate->accumulateIfNeeded(state, item);
-        ssize_t stateSize = state.size();
-        stateSize = stateSize > 8 ? stateSize : 0;
-        return groupSizeDelta + stateSize - initialStateSize;
-    }
-
-    bool contains(Value const& group) const
-    {
-        return super::count(group) != 0;
-    }
 };
 
-//XXX: do not inherit
-class HashBucket : private mgd::map<uint64_t, ValueChain >
-{
-private:
-     typedef mgd::map<uint64_t, ValueChain > super;
-
-    HashBucket()
-    {}
-
-public:
-    using super::begin;
-    using super::end;
-    using super::empty;
-    using super::const_iterator;
-    using super::find;
-
-    HashBucket(ArenaPtr const& arena):
-        super(arena.get())
-    {}
-
-    ~HashBucket()
-    {}
-
-    ssize_t insert(ArenaPtr const& arena, AttributeComparator const& comparator, uint64_t hash, Value const& group, Value const& item, AggregatePtr& aggregate, bool& newHash)
-    {
-        ValueChain& v = super::insert(std::make_pair(hash, ValueChain(arena, comparator))).first->second;
-        if (v.empty())
-        {
-            newHash = true;
-        }
-        return v.insert(group, item, aggregate);
-    }
-
-    bool contains(uint64_t hash, Value const& group) const
-    {
-        super::const_iterator iter = super::find(hash);
-        if(iter==super::end())
-        {
-            return false;
-        }
-        ValueChain const& v = iter->second;
-        return v.contains(group);
-    }
-};
-
-//XXX: do not inherit
 class AggregateHashTable
 {
 private:
-    mgd::vector < HashBucket >_data;
     ArenaPtr _arena;
-    mgd::vector <size_t> _hashes;
-    size_t _numUsedBuckets;
-    AttributeComparator const _comparator;
-    ssize_t _usedValueBytes;
+    mgd::vector< mgd::list<Triplet> > _data;
+    mgd::list<Triplet>::iterator _iter;
+    AttributeComparator     _comparator;
+    mgd::vector<uint64_t> _hashes;
+    Value    *_lastGroup;
+    Value    *_lastState;
+    ssize_t   _stateSizeOverflow;
+    size_t    _numGroups;
 
 public:
     static size_t const NUM_BUCKETS      = 1000037;
 
-    /**
-     * Make an empty one
-     */
     AggregateHashTable(AttributeComparator const& comparator, ArenaPtr const& arena):
-        _data(arena.get(), NUM_BUCKETS, HashBucket(arena)),
         _arena(arena),
-        _hashes(arena.get()),
-        _numUsedBuckets(0),
+        _data(_arena, NUM_BUCKETS, mgd::list<Triplet>(_arena)),
         _comparator(comparator),
-        _usedValueBytes(0)
+        _hashes(_arena, 0),
+        _lastGroup(0),
+        _lastState(0),
+        _stateSizeOverflow(0),
+        _numGroups(0)
     {}
 
-    /**
-     * Add a value for aggregation
-     * TODO: make aggregate a data member?
-     */
     void insert(Value const& group, Value const& item, AggregatePtr& aggregate)
     {
+        if(_lastGroup!=0 && group == (*_lastGroup))
+        {
+            aggregate->accumulateIfNeeded(*_lastState, item);
+            return;
+        }
         uint64_t hash = hashValue(group);
-        uint64_t bucketNo = hash % NUM_BUCKETS;
-        HashBucket& bucket = _data[bucketNo];
-        if ( bucket.empty())
+        mgd::list<Triplet>& list = _data[hash % NUM_BUCKETS];
+        _iter = list.begin();
+        bool seenHash = false;
+        while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _comparator(_iter->group, group)) ) )
         {
-            ++_numUsedBuckets;
+            ++_iter;
+            if(_iter->hash == hash)
+            {
+                seenHash = true;
+            }
         }
-        bool newHash = false;;
-        _usedValueBytes += bucket.insert(_arena, _comparator, hash, group, item, aggregate, newHash);
-        if(newHash)
+        ssize_t initialStateSize = 0;
+        if(_iter != list.end() && _iter->hash == hash && _iter->group == group)
         {
-            _hashes.push_back(hash);
+            initialStateSize = _iter->state.size() > 8 ? _iter->state.size() : 0;
         }
+        else
+        {
+            if(!seenHash)
+            {
+                _hashes.push_back(hash);
+            }
+            _iter = list.emplace(_iter, hash, group);
+            ++_numGroups;
+            aggregate->initializeState( _iter->state);
+        }
+        aggregate->accumulateIfNeeded(_iter->state, item);
+        ssize_t finalStateSize   = _iter->state.size() > 8 ? _iter->state.size() : 0;
+        _stateSizeOverflow += (finalStateSize - initialStateSize);
+        _lastGroup = &_iter->group;
+        _lastState = &_iter->state;
     }
 
     /**
@@ -238,8 +170,20 @@ public:
     bool contains(Value const& group, uint64_t& hash) const
     {
         hash = hashValue(group);
-        uint64_t bucketNo = hash % NUM_BUCKETS;
-        return _data[bucketNo].contains(hash, group);
+        mgd::list<Triplet> const& list = _data[hash % NUM_BUCKETS];
+        mgd::list<Triplet>::const_iterator _citer = list.begin();
+        while(_citer != list.end() &&  (_citer->hash < hash || (_citer->hash == hash && _comparator(_citer->group, group)) ) )
+        {
+            ++_citer;
+        }
+        if(_citer != list.end() && _citer->hash == hash && _citer->group == group)
+        {
+            return true;
+        }
+        else
+        {
+            return false;
+        }
     }
 
     /**
@@ -247,7 +191,11 @@ public:
      */
     size_t usedBytes() const
     {
-        return _arena->allocated() + ( _usedValueBytes > 0 ? _usedValueBytes : 0);
+        if(_stateSizeOverflow < 0)
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<" inconsistent state size overflow";
+        }
+        return _arena->allocated() + _stateSizeOverflow;
     }
 
     /**
@@ -261,20 +209,25 @@ public:
         std::sort(_hashes.begin(), _hashes.end());
     }
 
+    void logStuff()
+    {
+        LOG4CXX_DEBUG(logger, "AHTSTAT HASHES "<<_hashes.size()<<" GROUPS "<<_numGroups<<" ALLOC "<<_arena->allocated()<<" OVER "<<_stateSizeOverflow<<" BYTES "<<usedBytes());
+    }
+
     class const_iterator
     {
     private:
-        mgd::vector <HashBucket> const& _data;
+        mgd::vector <mgd::list<Triplet> > const& _data;
         mgd::vector<size_t> const& _hashes;
         mgd::vector<size_t>::const_iterator _hashIter;
-        HashBucket::const_iterator _bucketIter;
-        ValueChain::const_iterator _chainIter;
+        uint64_t _currHash;
+        mgd::list<Triplet>::const_iterator _listIter;
 
     public:
         /**
          * To get one, call AggregateHashTable::getIterator
          */
-        const_iterator(mgd::vector <HashBucket> const& data,
+        const_iterator(mgd::vector <mgd::list<Triplet> > const& data,
                        mgd::vector<size_t> const& hashes):
           _data(data),
           _hashes(hashes)
@@ -290,10 +243,13 @@ public:
             _hashIter = _hashes.begin();
             if(_hashIter != _hashes.end())
             {
-                size_t const hash = (*_hashIter);
-                HashBucket const& b = _data[hash % AggregateHashTable::NUM_BUCKETS];
-                _bucketIter = b.find(hash);
-                _chainIter = _bucketIter->second.begin();
+                _currHash = (*_hashIter);
+                mgd::list<Triplet> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                _listIter = l.begin();
+                while(_listIter->hash != _currHash)
+                {
+                    ++_listIter;
+                }
             }
         }
 
@@ -314,18 +270,21 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "iterating past end";
             }
-            ++(_chainIter);
-            if (_chainIter == _bucketIter->second.end())
+            ++(_listIter);
+            if (_listIter->hash != _currHash)
             {
                 ++(_hashIter);
                 if(end())
                 {
                     return;
                 }
-                size_t const hash = (*_hashIter);
-                HashBucket const& b = _data[hash % AggregateHashTable::NUM_BUCKETS];
-                _bucketIter = b.find(hash);
-                _chainIter = _bucketIter->second.begin();
+                _currHash = (*_hashIter);
+                mgd::list<Triplet> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                _listIter = l.begin();
+                while(_listIter->hash != _currHash)
+                {
+                   ++_listIter;
+                }
             }
         }
 
@@ -345,7 +304,7 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return _chainIter->first;
+            return _listIter->group;
         }
 
         Value const& getCurrentState() const
@@ -354,20 +313,13 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return _chainIter->second;
+            return _listIter->state;
         }
     };
 
     const_iterator getIterator() const
     {
         return const_iterator(_data, _hashes);
-    }
-
-    void dumpStatsToLog() const
-    {
-        LOG4CXX_DEBUG(logger, "Hashtable buckets " << _numUsedBuckets
-                                     << " bytes "  << usedBytes()
-                                     << " arena " << *(_arena.get()) );
     }
 };
 

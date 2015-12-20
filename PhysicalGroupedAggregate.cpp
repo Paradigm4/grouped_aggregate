@@ -317,6 +317,98 @@ public:
     }
 };
 
+class ArrayCursor
+{
+private:
+    shared_ptr<Array> _input;
+    size_t const _nAttrs;
+    vector <Value const *> _currentCell;
+    bool _end;
+    vector<shared_ptr<ConstArrayIterator> > _inputArrayIters;
+    vector<shared_ptr<ConstChunkIterator> > _inputChunkIters;
+
+public:
+    ArrayCursor (shared_ptr<Array> const& input):
+        _input(input),
+        _nAttrs(input->getArrayDesc().getAttributes(true).size()),
+        _currentCell(_nAttrs, 0),
+        _end(false),
+        _inputArrayIters(_nAttrs, 0),
+        _inputChunkIters(_nAttrs, 0)
+    {
+        for(size_t i =0; i<_nAttrs; ++i)
+        {
+            _inputArrayIters[i] = _input->getConstIterator(i);
+        }
+        if (_inputArrayIters[0]->end())
+        {
+            _end=true;
+        }
+        else
+        {
+            advance();
+        }
+    }
+
+    bool end() const
+    {
+        return _end;
+    }
+
+    size_t nAttrs() const
+    {
+        return _nAttrs;
+    }
+
+    void advance()
+    {
+        if(_end)
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Internal error: iterating past end of cursor";
+        }
+        if (_inputChunkIters[0] == 0) //1st time!
+        {
+            for(size_t i =0; i<_nAttrs; ++i)
+            {
+                _inputChunkIters[i] = _inputArrayIters[i]->getChunk().getConstIterator(ConstChunkIterator::IGNORE_OVERLAPS | ConstChunkIterator::IGNORE_EMPTY_CELLS);
+            }
+        }
+        else if (!_inputChunkIters[0]->end()) //not first time!
+        {
+            for(size_t i =0; i<_nAttrs; ++i)
+            {
+                ++(*_inputChunkIters[i]);
+            }
+        }
+        while(_inputChunkIters[0]->end())
+        {
+            for(size_t i =0; i<_nAttrs; ++i)
+            {
+                ++(*_inputArrayIters[i]);
+            }
+            if(_inputArrayIters[0]->end())
+            {
+                _end = true;
+                return;
+            }
+            for(size_t i =0; i<_nAttrs; ++i)
+            {
+                _inputChunkIters[i] = _inputArrayIters[i]->getChunk().getConstIterator(ConstChunkIterator::IGNORE_OVERLAPS | ConstChunkIterator::IGNORE_EMPTY_CELLS);
+            }
+        }
+        for(size_t i =0; i<_nAttrs; ++i)
+        {
+            _currentCell[i] = &(_inputChunkIters[i]->getItem());
+        }
+    }
+
+    vector <Value const *> const& getCell()
+    {
+        return _currentCell;
+    }
+};
+
+
 } //namespace grouped_aggregate
 
 using namespace grouped_aggregate;
@@ -371,6 +463,8 @@ public:
         FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), settings.getSpilloverChunkSize(), query);
         size_t const maxTableSize = 150*1024*1024;
         DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
+        bool spilloverSorted = true;
+        MergeWriter<Settings::MERGE> flatCondensed(settings, query);
         while(!gaiter->end())
         {
             gciter=gaiter->getChunk().getConstIterator();
@@ -418,6 +512,7 @@ public:
         gaiter = arr->getConstIterator(1);
         iaiter = arr->getConstIterator(2);
         shared_ptr<ConstChunkIterator> hciter;
+        aht.logStuff();
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
         MergeWriter<Settings::MERGE> mergeWriter(settings, query);
         while(!haiter->end())
