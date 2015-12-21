@@ -135,11 +135,15 @@ public:
         bool seenHash = false;
         while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _comparator(_iter->group, group)) ) )
         {
-            ++_iter;
             if(_iter->hash == hash)
             {
                 seenHash = true;
             }
+            ++_iter;
+        }
+        if(_iter != list.end() && _iter->hash == hash) //in case the first element in the table matches and is bigger group
+        {
+            seenHash = true;
         }
         ssize_t initialStateSize = 0;
         if(_iter != list.end() && _iter->hash == hash && _iter->group == group)
@@ -207,11 +211,6 @@ public:
     void sortKeys()
     {
         std::sort(_hashes.begin(), _hashes.end());
-    }
-
-    void logStuff()
-    {
-        LOG4CXX_DEBUG(logger, "AHTSTAT HASHES "<<_hashes.size()<<" GROUPS "<<_numGroups<<" ALLOC "<<_arena->allocated()<<" OVER "<<_stateSizeOverflow<<" BYTES "<<usedBytes());
     }
 
     class const_iterator
@@ -321,6 +320,13 @@ public:
     {
         return const_iterator(_data, _hashes);
     }
+
+    void logStuff()
+    {
+        LOG4CXX_DEBUG(logger, "AHTSTAT HASHES "<<_hashes.size()<<" GROUPS "<<_numGroups<<" ALLOC "<<_arena->allocated()<<" OVER "<<_stateSizeOverflow<<" BYTES "<<usedBytes());
+    }
+
+
 };
 
 } } //namespace scidb::grouped_aggregate
