@@ -13,7 +13,7 @@ store(
  apply(
   build(<val: double null> [i=1:16000000,1000000,0], iif(random()%10=0, null, random() % 100 )),
   a, iif(random() % 2 = 0, 'abc', 'def'),
-  b, iif(i % 5 = 0, null, string(i)),
+  b, iif(i % 5 = 0, null, string(i) + '0'),
   c, iif(random() % 10 =0, null, iif(random()%9=0, double(nan), random() % 20 ))
  ),
  foo

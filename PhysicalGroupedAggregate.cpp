@@ -454,7 +454,7 @@ public:
         AttributeID const aggregatedAttribute = settings.getInputAttributeId();
         AttributeComparator comparator( settings.getGroupAttributeType());
         ArenaPtr operatorArena = this->getArena();
-        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(10 * 1024 * 1204).parent(operatorArena)));
+        ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(comparator, hashArena);
         AggregatePtr agg = settings.cloneAggregate();
         shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeId()));

@@ -105,7 +105,7 @@ private:
     mgd::vector<uint64_t> _hashes;
     Value    *_lastGroup;
     Value    *_lastState;
-    ssize_t   _stateSizeOverflow;
+    ssize_t   _largeValueMemory;
     size_t    _numGroups;
 
 public:
@@ -118,7 +118,7 @@ public:
         _hashes(_arena, 0),
         _lastGroup(0),
         _lastState(0),
-        _stateSizeOverflow(0),
+        _largeValueMemory(0),
         _numGroups(0)
     {}
 
@@ -148,7 +148,7 @@ public:
         ssize_t initialStateSize = 0;
         if(_iter != list.end() && _iter->hash == hash && _iter->group == group)
         {
-            initialStateSize = _iter->state.size() > 8 ? _iter->state.size() : 0;
+            initialStateSize = _iter->state.isLarge() ? _iter->state.size() : 0;
         }
         else
         {
@@ -157,12 +157,16 @@ public:
                 _hashes.push_back(hash);
             }
             _iter = list.emplace(_iter, hash, group);
+            if(group.isLarge())
+            {
+                _largeValueMemory += group.size();
+            }
             ++_numGroups;
             aggregate->initializeState( _iter->state);
         }
         aggregate->accumulateIfNeeded(_iter->state, item);
-        ssize_t finalStateSize   = _iter->state.size() > 8 ? _iter->state.size() : 0;
-        _stateSizeOverflow += (finalStateSize - initialStateSize);
+        ssize_t finalStateSize   = _iter->state.isLarge() ? _iter->state.size() : 0;
+        _largeValueMemory += (finalStateSize - initialStateSize);
         _lastGroup = &_iter->group;
         _lastState = &_iter->state;
     }
@@ -175,19 +179,20 @@ public:
     {
         hash = hashValue(group);
         mgd::list<Triplet> const& list = _data[hash % NUM_BUCKETS];
-        mgd::list<Triplet>::const_iterator _citer = list.begin();
-        while(_citer != list.end() &&  (_citer->hash < hash || (_citer->hash == hash && _comparator(_citer->group, group)) ) )
+        mgd::list<Triplet>::const_iterator citer = list.begin();
+        while(citer != list.end())
         {
-            ++_citer;
+            if(citer->hash == hash && citer->group == group)
+            {
+                return true;
+            }
+            if(citer->hash > hash)
+            {
+                return false;
+            }
+            ++citer;
         }
-        if(_citer != list.end() && _citer->hash == hash && _citer->group == group)
-        {
-            return true;
-        }
-        else
-        {
-            return false;
-        }
+        return false;
     }
 
     /**
@@ -195,11 +200,11 @@ public:
      */
     size_t usedBytes() const
     {
-        if(_stateSizeOverflow < 0)
+        if(_largeValueMemory < 0)
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<" inconsistent state size overflow";
         }
-        return _arena->allocated() + _stateSizeOverflow;
+        return _arena->allocated() + _largeValueMemory;
     }
 
     /**
@@ -323,10 +328,8 @@ public:
 
     void logStuff()
     {
-        LOG4CXX_DEBUG(logger, "AHTSTAT HASHES "<<_hashes.size()<<" GROUPS "<<_numGroups<<" ALLOC "<<_arena->allocated()<<" OVER "<<_stateSizeOverflow<<" BYTES "<<usedBytes());
+        LOG4CXX_DEBUG(logger, "AHTSTAT hashes "<<_hashes.size()<<" groups "<<_numGroups<<" alloc "<<_arena->allocated()<<" large_vals "<<_largeValueMemory<<" total "<<usedBytes());
     }
-
-
 };
 
 } } //namespace scidb::grouped_aggregate
