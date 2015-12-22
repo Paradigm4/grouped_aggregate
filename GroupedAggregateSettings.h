@@ -31,6 +31,8 @@ private:
     size_t _outputChunkSize;
     bool   _outputChunkSizeSet;
     size_t const _numInstances;
+    bool   _inputSorted;
+    bool   _inputSortedSet;
     TypeId _inputAttributeType;
     TypeId _stateType;
     TypeId _outputAttributeType;
@@ -54,7 +56,9 @@ public:
         _mergeChunkSizeSet      ( false ),
         _outputChunkSize        ( 1000000 ),
         _outputChunkSizeSet     ( false ),
-        _numInstances           ( query -> getInstancesCount() )
+        _numInstances           ( query -> getInstancesCount() ),
+        _inputSorted            ( false ),
+        _inputSortedSet         ( false )
     {
         _aggregate = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) operatorParameters[1], inputSchema.getAttributes(), &_inputAttributeId, &_outputAttributeName);
         _stateType = _aggregate->getStateType().typeId();
@@ -133,6 +137,11 @@ public:
     size_t getOutputChunkSize() const
     {
         return _outputChunkSize;
+    }
+
+    bool inputSorted() const
+    {
+        return _inputSorted;
     }
 
     enum SchemaType

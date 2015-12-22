@@ -460,10 +460,10 @@ public:
         shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeId()));
         shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
         shared_ptr<ConstChunkIterator> gciter, iciter;
-        FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), settings.getSpilloverChunkSize(), query);
         size_t const maxTableSize = 150*1024*1024;
         DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
         bool spilloverSorted = true;
+        FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), settings.getSpilloverChunkSize(), query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
         while(!gaiter->end())
         {
@@ -488,7 +488,14 @@ public:
                 {
                     if(!aht.contains(group, hash))
                     {
-                        flatWriter.writeValue(hash, group, input);
+                        if(settings.inputSorted())
+                        {
+                            flatCondensed.writeValue(hash, group, input);
+                        }
+                        else
+                        {
+                            flatWriter.writeValue(hash, group, input);
+                        }
                     }
                     else
                     {
@@ -505,7 +512,7 @@ public:
         iaiter.reset();
         gciter.reset();
         iciter.reset();
-        shared_ptr<Array> arr = flatWriter.finalize();
+        shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
         aht.sortKeys();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
@@ -530,7 +537,14 @@ public:
                     mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
                     ahtIter.next();
                 }
-                mergeWriter.writeValue(hash,group,input);
+                if(settings.inputSorted())
+                {
+                    mergeWriter.writeState(hash,group,input);
+                }
+                else
+                {
+                    mergeWriter.writeValue(hash,group,input);
+                }
                 ++(*hciter);
                 ++(*gciter);
                 ++(*iciter);
