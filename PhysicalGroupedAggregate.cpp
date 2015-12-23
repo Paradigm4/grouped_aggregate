@@ -52,88 +52,6 @@ using grouped_aggregate::Settings;
 namespace grouped_aggregate
 {
 
-class FlatWriter : public boost::noncopyable
-{
-private:
-    shared_ptr<Array> _output;
-    size_t const _numAttributes;
-    size_t const _chunkSize;
-    shared_ptr<Query> _query;
-    Coordinates _outputPosition;
-    vector<shared_ptr<ArrayIterator> > _outputArrayIterators;
-    vector<shared_ptr<ChunkIterator> > _outputChunkIterators;
-    Value _buf;
-
-public:
-    static ArrayDesc makeSchema(TypeId const& groupType, TypeId const& valueType, size_t const chunkSize)
-    {
-        Attributes outputAttributes;
-        outputAttributes.push_back( AttributeDesc(0, "hash",   TID_UINT64,    0, 0));
-        outputAttributes.push_back( AttributeDesc(1, "group",  groupType, 0, 0));
-        outputAttributes.push_back( AttributeDesc(2, "value",  valueType,     AttributeDesc::IS_NULLABLE, 0));
-        outputAttributes = addEmptyTagAttribute(outputAttributes);
-        Dimensions outputDimensions;
-        outputDimensions.push_back(DimensionDesc("i", 0, CoordinateBounds::getMax(), chunkSize, 0));
-        return ArrayDesc("grouped_aggregate_state", outputAttributes, outputDimensions, defaultPartitioning());
-    }
-
-    FlatWriter(TypeId const& groupType, TypeId const& valueType, size_t const chunkSize, shared_ptr<Query> const& query):
-        _output(make_shared<MemArray>(makeSchema(groupType, valueType, chunkSize), query)),
-        _numAttributes(3),
-        _chunkSize(chunkSize),
-        _query(query),
-        _outputPosition(1, 0),
-        _outputArrayIterators(_numAttributes),
-        _outputChunkIterators(_numAttributes)
-    {
-        for(AttributeID i =0; i<_numAttributes; ++i)
-        {
-            _outputArrayIterators[i] = _output->getIterator(i);
-        }
-    }
-
-    void writeValue (uint64_t const hash, Value const& group, Value const& value)
-    {
-        if(_outputPosition[0] % _chunkSize == 0)
-        {
-            for(AttributeID i=0; i<_numAttributes; ++i)
-            {
-                if(_outputChunkIterators[i].get())
-                {
-                    _outputChunkIterators[i]->flush();
-                }
-                _outputChunkIterators[i] = _outputArrayIterators[i]->newChunk(_outputPosition).getIterator(_query,
-                                i == 0 ? ChunkIterator::SEQUENTIAL_WRITE :
-                                         ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
-            }
-        }
-        _buf.setUint64(hash);
-        _outputChunkIterators[0]->setPosition(_outputPosition);
-        _outputChunkIterators[0]->writeItem(_buf);
-        _outputChunkIterators[1]->setPosition(_outputPosition);
-        _outputChunkIterators[1]->writeItem(group);
-        _outputChunkIterators[2]->setPosition(_outputPosition);
-        _outputChunkIterators[2]->writeItem(value);
-        ++(_outputPosition[0]);
-    }
-
-    shared_ptr<Array> finalize()
-    {
-        for(AttributeID i =0; i<_numAttributes; ++i)
-        {
-            if(_outputChunkIterators[i].get())
-            {
-                _outputChunkIterators[i]->flush();
-            }
-            _outputChunkIterators[i].reset();
-            _outputArrayIterators[i].reset();
-        }
-        shared_ptr<Array> result = _output;
-        _output.reset();
-        return result;
-    }
-};
-
 template <Settings::SchemaType SCHEMA_TYPE>
 class MergeWriter : public boost::noncopyable
 {
@@ -159,14 +77,18 @@ public:
     MergeWriter(Settings const& settings, shared_ptr<Query> const& query, string const name = ""):
         _output(make_shared<MemArray>(settings.makeSchema(SCHEMA_TYPE, name), query)),
         _numAttributes(SCHEMA_TYPE == Settings:: FINAL ? 2 : 3),
-        _chunkSize(SCHEMA_TYPE == Settings::MERGE ? settings.getMergeChunkSize() : settings.getOutputChunkSize() ),
+        _chunkSize(_output->getArrayDesc().getDimensions()[_output->getArrayDesc().getDimensions().size()-1].getChunkInterval()),
         _numInstances(query->getInstancesCount()),
         _myInstanceId(query->getInstanceID()),
         _aggregate(settings.cloneAggregate()),
         _hashBreaks(_numInstances-1,0),
         _query(query),
-        _outputPosition( SCHEMA_TYPE == Settings::FINAL ? 2 : 3, 0),
-        _outputValueNo(  SCHEMA_TYPE == Settings::FINAL ? _outputPosition[1] : _outputPosition[2]),
+        _outputPosition( SCHEMA_TYPE == Settings::SPILL ? 1 :
+                         SCHEMA_TYPE== Settings::MERGE ?  3 :
+                                                          2 , 0),
+        _outputValueNo(  SCHEMA_TYPE == Settings::SPILL ? _outputPosition[0] :
+                         SCHEMA_TYPE == Settings::MERGE ? _outputPosition[2] :
+                                                          _outputPosition[1]),
         _outputArrayIterators(_numAttributes),
         _outputChunkIterators(_numAttributes)
     {
@@ -185,7 +107,7 @@ public:
             _outputPosition[1] = _myInstanceId;
             _outputPosition[2] = 0;
         }
-        else
+        else if(SCHEMA_TYPE == Settings::FINAL)
         {
             _outputPosition[0] = _myInstanceId;
             _outputPosition[1] = 0;
@@ -205,17 +127,27 @@ public:
 
     void writeValue (Value const& hash, Value const& group, Value const& item)
     {
-        if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+        if(SCHEMA_TYPE == Settings::SPILL && _curHash.getMissingReason() != 0)
         {
-            if(_curHash.getMissingReason() != 0)
-            {
-                writeCurrent();
-            }
+            writeCurrent();
             _curHash = hash;
             _curGroup = group;
-            _aggregate->initializeState(_curState);
+            _curState = item;
         }
-        _aggregate->accumulateIfNeeded(_curState, item);
+        else
+        {
+            if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+            {
+                if(_curHash.getMissingReason() != 0)
+                {
+                    writeCurrent();
+                }
+                _curHash = hash;
+                _curGroup = group;
+                _aggregate->initializeState(_curState);
+            }
+            _aggregate->accumulateIfNeeded(_curState, item);
+        }
     }
 
     void writeState (uint64_t const hash, Value const& group, Value const& state)
@@ -227,17 +159,24 @@ public:
 
     void writeState (Value const& hash, Value const& group, Value const& state)
     {
-        if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+        if(SCHEMA_TYPE == Settings::SPILL)
         {
-            if(_curHash.getMissingReason() != 0)
-            {
-                writeCurrent();
-            }
-            _curHash = hash;
-            _curGroup = group;
-            _aggregate->initializeState(_curState);
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "don't call writeState on a SPILL writer";
         }
-        _aggregate->mergeIfNeeded(_curState, state);
+        else
+        {
+            if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || _curGroup != group)
+            {
+                if(_curHash.getMissingReason() != 0)
+                {
+                    writeCurrent();
+                }
+                _curHash = hash;
+                _curGroup = group;
+                _aggregate->initializeState(_curState);
+            }
+            _aggregate->mergeIfNeeded(_curState, state);
+        }
     }
 
 private:
@@ -463,7 +402,7 @@ public:
         size_t const maxTableSize = 150*1024*1024;
         DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
         bool spilloverSorted = true;
-        FlatWriter flatWriter(settings.getGroupAttributeType(), settings.getInputAttributeType(), settings.getSpilloverChunkSize(), query);
+        MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
         while(!gaiter->end())
         {

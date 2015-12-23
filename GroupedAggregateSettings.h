@@ -146,6 +146,7 @@ public:
 
     enum SchemaType
     {
+        SPILL,
         MERGE,
         FINAL
     };
@@ -159,19 +160,27 @@ public:
             outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
         }
         outputAttributes.push_back( AttributeDesc(i++, _groupAttributeName,  _groupAttributeType, 0, 0));
-        outputAttributes.push_back( AttributeDesc(i++, _outputAttributeName, type == MERGE ? _stateType : _outputAttributeType, AttributeDesc::IS_NULLABLE, 0));
+        outputAttributes.push_back( AttributeDesc(i++,
+                                                  _outputAttributeName,
+                                                  type == SPILL ? _inputAttributeType :
+                                                  type == MERGE ? _stateType :
+                                                                  _outputAttributeType,
+                                                  AttributeDesc::IS_NULLABLE, 0));
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
-        if(type != FINAL)
+        if(type == MERGE)
         {
             outputDimensions.push_back(DimensionDesc("dst_instance_id", 0, _numInstances-1, 1, 0));
             outputDimensions.push_back(DimensionDesc("src_instance_id", 0, _numInstances-1, 1, 0));
         }
-        else
+        else if(type == FINAL)
         {
             outputDimensions.push_back(DimensionDesc("instance_id", 0,     _numInstances-1, 1, 0));
         }
-        outputDimensions.push_back(DimensionDesc("value_no",        0, CoordinateBounds::getMax(), type == MERGE ? _mergeChunkSize : _outputChunkSize, 0));
+        outputDimensions.push_back(DimensionDesc("value_no",  0, CoordinateBounds::getMax(),
+                                                 type == SPILL ? _spilloverChunkSize :
+                                                 type == MERGE ? _mergeChunkSize :
+                                                                 _outputChunkSize, 0));
         return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning());
     }
 };
