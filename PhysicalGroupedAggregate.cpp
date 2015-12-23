@@ -40,7 +40,6 @@
 // Logger for operator. static to prevent visibility of variable outside of file
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("agg"));
 
-
 using namespace boost;
 using namespace std;
 
@@ -394,16 +393,15 @@ public:
         AttributeComparator comparator( settings.getGroupAttributeType());
         ArenaPtr operatorArena = this->getArena();
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(8 * 1024 * 1204).parent(operatorArena)));
-        AggregateHashTable aht(comparator, hashArena);
+        AggregateHashTable aht(settings, hashArena);
         AggregatePtr agg = settings.cloneAggregate();
         shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeId()));
         shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
         shared_ptr<ConstChunkIterator> gciter, iciter;
         size_t const maxTableSize = 150*1024*1024;
-        DoubleFloatOther dfo = getDoubleFloatOther(settings.getGroupAttributeType());
-        bool spilloverSorted = true;
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
+        vector<Value const*> group(1, NULL);
         while(!gaiter->end())
         {
             gciter=gaiter->getChunk().getConstIterator();
@@ -411,8 +409,8 @@ public:
             while(!gciter->end())
             {
                 uint64_t hash;
-                Value const& group = gciter->getItem();
-                if(group.isNull() || isNan(group, dfo))
+                group[0] = &gciter->getItem();
+                if(!settings.groupValid(group))
                 {
                     ++(*gciter);
                     ++(*iciter);
@@ -429,11 +427,11 @@ public:
                     {
                         if(settings.inputSorted())
                         {
-                            flatCondensed.writeValue(hash, group, input);
+                            flatCondensed.writeValue(hash, *(group[0]), input);
                         }
                         else
                         {
-                            flatWriter.writeValue(hash, group, input);
+                            flatWriter.writeValue(hash, *(group[0]), input);
                         }
                     }
                     else
@@ -471,9 +469,9 @@ public:
                 Value const& hash  = hciter->getItem();
                 Value const& group = gciter->getItem();
                 Value const& input = iciter->getItem();
-                while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() || (ahtIter.getCurrentHash() == hash.getUint64() && comparator(ahtIter.getCurrentGroup(), group))))
+                while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() || (ahtIter.getCurrentHash() == hash.getUint64() && comparator(ahtIter.getCurrentGroup()[0], group))))
                 {
-                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
+                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup()[0], ahtIter.getCurrentState());
                     ahtIter.next();
                 }
                 if(settings.inputSorted())
@@ -500,7 +498,7 @@ public:
         iaiter.reset();
         while(!ahtIter.end())
         {
-            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup(), ahtIter.getCurrentState());
+            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getCurrentGroup()[0], ahtIter.getCurrentState());
             ahtIter.next();
         }
         return mergeWriter.finalize();

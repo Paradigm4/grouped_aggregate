@@ -2,6 +2,7 @@
 #define GROUPED_AGGREGATE_SETTINGS
 
 #include <query/Operator.h>
+#include <query/AttributeComparator.h>
 
 namespace scidb
 {
@@ -12,6 +13,7 @@ using std::string;
 using std::vector;
 using std::shared_ptr;
 using std::dynamic_pointer_cast;
+
 
 /*
  * Settings for the grouped_aggregate operator.
@@ -39,6 +41,8 @@ private:
     AttributeID  _inputAttributeId;
     string _outputAttributeName;
     AggregatePtr _aggregate;
+    AttributeComparator _groupComparator;
+    DoubleFloatOther   _dfo;
 
 public:
     Settings(ArrayDesc const& inputSchema,
@@ -72,6 +76,8 @@ public:
             throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
         }
         _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
+        _groupComparator = AttributeComparator(_groupAttributeType);
+        _dfo = getDoubleFloatOther(_groupAttributeType);
     }
 
     AttributeID getGroupAttributeId() const
@@ -182,6 +188,31 @@ public:
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
         return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning());
+    }
+
+    size_t getGroupSize() const
+    {
+        return 1;
+    }
+
+    inline bool groupValid(std::vector<Value const*> const& g) const
+    {
+        Value const& v = *(g[0]);
+        if(v.isNull() || isNan(v, _dfo))
+        {
+            return false;
+        }
+        return true;
+    }
+
+    inline bool groupLess(Value const* g1, std::vector<Value const*> const& g2) const
+    {
+        return _groupComparator(g1[0], *(g2[0]));
+    }
+
+    inline bool groupEqual(Value const* g1, std::vector<Value const*> const& g2) const
+    {
+        return g1[0] == *(g2[0]);
     }
 };
 

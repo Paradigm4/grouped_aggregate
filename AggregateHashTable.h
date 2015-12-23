@@ -10,6 +10,7 @@
 #include <util/Arena.h>
 #include <array/SortArray.h>
 #include <array/TupleArray.h>
+#include "GroupedAggregateSettings.h"
 
 namespace scidb
 {
@@ -22,14 +23,14 @@ using scidb::arena::newArena;
 using scidb::SortArray;
 using std::shared_ptr;
 using std::dynamic_pointer_cast;
-
+using grouped_aggregate::Settings;
 
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.aht"));
 
 // MurmurHash2, 64-bit versions, by Austin Appleby
 // From https://sites.google.com/site/murmurhash/
 // MIT license
-uint64_t mh64a ( const void * key, int len, unsigned int seed = 0x5C1DB123 )
+uint64_t mh64a ( const void * key, int len, uint32_t const seed = 0x5C1DB123 )
 {
     if (key == 0 || len == 0)
     {
@@ -76,6 +77,28 @@ uint64_t hashValue( Value const& val)
     return mh64a(val.data(), val.size());
 }
 
+uint64_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+{
+    if(groupSize == 1)
+    {
+        Value const* v = group[0];
+        return hashValue(*v);
+    }
+    size_t totalSize = 0;
+    for(size_t i =0; i<groupSize; ++i)
+    {
+        totalSize += group[i]->size();
+    }
+    std::vector<char> buf (totalSize);  //TODO: get rid of this allocation
+    char* ch = &buf[0];
+    for(size_t i =0; i<groupSize; ++i)
+    {
+        memcpy(ch, group[i]->data(), group[i]->size());
+        ch += group[i]->size();
+    }
+    return mh64a(&buf[0], totalSize);
+}
+
 static void EXCEPTION_ASSERT(bool cond)
 {
     if (! cond)
@@ -84,56 +107,68 @@ static void EXCEPTION_ASSERT(bool cond)
     }
 }
 
-struct Triplet
+struct HashTableEntry
 {
     uint64_t hash;
-    Value    group;
+    mgd::vector<Value> group;
     Value    state;
 
-    Triplet(uint64_t const h, Value const& g):
-      hash(h), group(g)
-    {}
+    HashTableEntry(ArenaPtr& arena, size_t const groupSize, uint64_t const h, std::vector<Value const*> g):
+      hash(h), group(arena, groupSize)
+    {
+        for(size_t i=0; i<groupSize; ++i)
+        {
+            group[i] = *(g[i]);
+        }
+    }
+
+    Value const* groupPtr() const
+    {
+        return &(group[0]);
+    }
 };
 
 class AggregateHashTable
 {
 private:
-    ArenaPtr _arena;
-    mgd::vector< mgd::list<Triplet> > _data;
-    mgd::list<Triplet>::iterator _iter;
-    AttributeComparator     _comparator;
-    mgd::vector<uint64_t> _hashes;
-    Value    *_lastGroup;
-    Value    *_lastState;
-    ssize_t   _largeValueMemory;
-    size_t    _numGroups;
+    ArenaPtr                                 _arena;
+    size_t const                             _groupSize;
+    mgd::vector< mgd::list<HashTableEntry> > _data;
+    mgd::list<HashTableEntry>::iterator      _iter;
+    Settings const&                          _settings;
+    mgd::vector<uint64_t>                    _hashes;
+    Value const*                             _lastGroup;
+    Value    *                               _lastState;
+    ssize_t                                  _largeValueMemory;
+    size_t                                   _numGroups;
 
 public:
     static size_t const NUM_BUCKETS      = 1000037;
 
-    AggregateHashTable(AttributeComparator const& comparator, ArenaPtr const& arena):
+    AggregateHashTable(Settings const& settings, ArenaPtr const& arena):
         _arena(arena),
-        _data(_arena, NUM_BUCKETS, mgd::list<Triplet>(_arena)),
-        _comparator(comparator),
+        _groupSize(settings.getGroupSize()),
+        _data(_arena, NUM_BUCKETS, mgd::list<HashTableEntry>(_arena)),
+        _settings(settings),
         _hashes(_arena, 0),
-        _lastGroup(0),
+        _lastGroup(NULL),
         _lastState(0),
         _largeValueMemory(0),
         _numGroups(0)
     {}
 
-    void insert(Value const& group, Value const& item, AggregatePtr& aggregate)
+    void insert(std::vector<Value const*> const& group, Value const& item, AggregatePtr& aggregate)
     {
-        if(_lastGroup!=0 && group == (*_lastGroup))
+        if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
             aggregate->accumulateIfNeeded(*_lastState, item);
             return;
         }
-        uint64_t hash = hashValue(group);
-        mgd::list<Triplet>& list = _data[hash % NUM_BUCKETS];
+        uint64_t hash = hashGroup(group, _groupSize);
+        mgd::list<HashTableEntry>& list = _data[hash % NUM_BUCKETS];
         _iter = list.begin();
         bool seenHash = false;
-        while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _comparator(_iter->group, group)) ) )
+        while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _settings.groupLess(_iter->groupPtr(), group))))
         {
             if(_iter->hash == hash)
             {
@@ -146,7 +181,7 @@ public:
             seenHash = true;
         }
         ssize_t initialStateSize = 0;
-        if(_iter != list.end() && _iter->hash == hash && _iter->group == group)
+        if(_iter != list.end() && _iter->hash == hash && _settings.groupEqual(_iter->groupPtr(), group))
         {
             initialStateSize = _iter->state.isLarge() ? _iter->state.size() : 0;
         }
@@ -156,10 +191,13 @@ public:
             {
                 _hashes.push_back(hash);
             }
-            _iter = list.emplace(_iter, hash, group);
-            if(group.isLarge())
+            _iter = list.emplace(_iter, _arena, _groupSize, hash, group);
+            for(size_t i =0; i<_groupSize; ++i)
             {
-                _largeValueMemory += group.size();
+                if(group[i]->isLarge())
+                {
+                    _largeValueMemory += group[i]->size();
+                }
             }
             ++_numGroups;
             aggregate->initializeState( _iter->state);
@@ -167,7 +205,7 @@ public:
         aggregate->accumulateIfNeeded(_iter->state, item);
         ssize_t finalStateSize   = _iter->state.isLarge() ? _iter->state.size() : 0;
         _largeValueMemory += (finalStateSize - initialStateSize);
-        _lastGroup = &_iter->group;
+        _lastGroup = _iter->groupPtr();
         _lastState = &_iter->state;
     }
 
@@ -175,14 +213,14 @@ public:
      * @param[out] hash computes the hash of group as a side-effect
      * @return true if the table contains the group, false otherwise
      */
-    bool contains(Value const& group, uint64_t& hash) const
+    bool contains(std::vector<Value const*> const& group, uint64_t& hash) const
     {
-        hash = hashValue(group);
-        mgd::list<Triplet> const& list = _data[hash % NUM_BUCKETS];
-        mgd::list<Triplet>::const_iterator citer = list.begin();
+        hash = hashGroup(group, _groupSize);
+        mgd::list<HashTableEntry> const& list = _data[hash % NUM_BUCKETS];
+        mgd::list<HashTableEntry>::const_iterator citer = list.begin();
         while(citer != list.end())
         {
-            if(citer->hash == hash && citer->group == group)
+            if(citer->hash == hash && _settings.groupEqual(citer->groupPtr(), group))
             {
                 return true;
             }
@@ -221,17 +259,17 @@ public:
     class const_iterator
     {
     private:
-        mgd::vector <mgd::list<Triplet> > const& _data;
+        mgd::vector <mgd::list<HashTableEntry> > const& _data;
         mgd::vector<size_t> const& _hashes;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
-        mgd::list<Triplet>::const_iterator _listIter;
+        mgd::list<HashTableEntry>::const_iterator _listIter;
 
     public:
         /**
          * To get one, call AggregateHashTable::getIterator
          */
-        const_iterator(mgd::vector <mgd::list<Triplet> > const& data,
+        const_iterator(mgd::vector <mgd::list<HashTableEntry> > const& data,
                        mgd::vector<size_t> const& hashes):
           _data(data),
           _hashes(hashes)
@@ -248,7 +286,7 @@ public:
             if(_hashIter != _hashes.end())
             {
                 _currHash = (*_hashIter);
-                mgd::list<Triplet> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                mgd::list<HashTableEntry> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
                 _listIter = l.begin();
                 while(_listIter->hash != _currHash)
                 {
@@ -283,7 +321,7 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                mgd::list<Triplet> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                mgd::list<HashTableEntry> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
                 _listIter = l.begin();
                 while(_listIter->hash != _currHash)
                 {
@@ -302,13 +340,13 @@ public:
             return (*_hashIter);
         }
 
-        Value const& getCurrentGroup() const
+        Value const* getCurrentGroup() const
         {
             if (end())
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return _listIter->group;
+            return _listIter->groupPtr();
         }
 
         Value const& getCurrentState() const
