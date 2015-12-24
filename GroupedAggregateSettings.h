@@ -21,9 +21,10 @@ using std::dynamic_pointer_cast;
 class Settings
 {
 private:
-    AttributeID const _groupAttributeId;
-    string const _groupAttributeName;
-    TypeId const _groupAttributeType;
+    vector<AttributeID> _groupAttributeIds;
+    vector<string> _groupAttributeNames;
+    vector<TypeId> _groupAttributeTypes;
+    size_t _groupSize;
     size_t _maxTableSize;
     bool   _maxTableSizeSet;
     size_t _spilloverChunkSize;
@@ -41,17 +42,18 @@ private:
     AttributeID  _inputAttributeId;
     string _outputAttributeName;
     AggregatePtr _aggregate;
-    AttributeComparator _groupComparator;
-    DoubleFloatOther   _dfo;
+    vector<AttributeComparator> _groupComparators;
+    vector<DoubleFloatOther>    _groupDfo;
 
 public:
     Settings(ArrayDesc const& inputSchema,
              vector< shared_ptr<OperatorParam> > const& operatorParameters,
              bool logical,
              shared_ptr<Query>& query):
-        _groupAttributeId       (dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectNo()),
-        _groupAttributeName     (dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectName()),
-        _groupAttributeType     (inputSchema.getAttributes()[_groupAttributeId].getType()),
+        _groupAttributeIds      (1, dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectNo()),
+        _groupAttributeNames    (1, dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectName()),
+        _groupAttributeTypes    (1, inputSchema.getAttributes()[_groupAttributeIds[0]].getType()),
+        _groupSize              (1),
         _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER) * 1024 * 1024 ),
         _maxTableSizeSet        ( false ),
         _spilloverChunkSize     ( 1000000 ),
@@ -69,30 +71,30 @@ public:
         _outputAttributeType = _aggregate->getResultType().typeId();
         if(_inputAttributeId == INVALID_ATTRIBUTE_ID)
         {
-            _inputAttributeId = _groupAttributeId;
+            _inputAttributeId = _groupAttributeIds[0];
         }
         if(_aggregate->isOrderSensitive())
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
         }
         _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
-        _groupComparator = AttributeComparator(_groupAttributeType);
-        _dfo = getDoubleFloatOther(_groupAttributeType);
+        _groupComparators.push_back(AttributeComparator(_groupAttributeTypes[0]));
+        _groupDfo.push_back(getDoubleFloatOther(_groupAttributeTypes[0]));
     }
 
-    AttributeID getGroupAttributeId() const
+    vector<AttributeID> const& getGroupAttributeIds() const
     {
-        return _groupAttributeId;
+        return _groupAttributeIds;
     }
 
-    string const& getGroupAttributeName() const
+    vector<string> const& getGroupAttributeNames() const
     {
-        return _groupAttributeName;
+        return _groupAttributeNames;
     }
 
-    TypeId const& getGroupAttributeType() const
+    vector<TypeId> const& getGroupAttributeTypes() const
     {
-        return _groupAttributeType;
+        return _groupAttributeTypes;
     }
 
     TypeId const& getInputAttributeType() const
@@ -165,7 +167,10 @@ public:
         {
             outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
         }
-        outputAttributes.push_back( AttributeDesc(i++, _groupAttributeName,  _groupAttributeType, 0, 0));
+        for (size_t j =0; j<_groupSize; ++j)
+        {
+            outputAttributes.push_back( AttributeDesc(i++, _groupAttributeNames[j],  _groupAttributeTypes[j], 0, 0));
+        }
         outputAttributes.push_back( AttributeDesc(i++,
                                                   _outputAttributeName,
                                                   type == SPILL ? _inputAttributeType :
@@ -192,27 +197,56 @@ public:
 
     size_t getGroupSize() const
     {
-        return 1;
+        return _groupSize;
     }
 
     inline bool groupValid(std::vector<Value const*> const& g) const
     {
-        Value const& v = *(g[0]);
-        if(v.isNull() || isNan(v, _dfo))
+        for(size_t i =0; i<_groupSize; ++i)
         {
-            return false;
+            Value const& v = *(g[i]);
+            if(v.isNull() || isNan(v, _groupDfo[i]))
+            {
+                return false;
+            }
         }
         return true;
     }
 
     inline bool groupLess(Value const* g1, std::vector<Value const*> const& g2) const
     {
-        return _groupComparator(g1[0], *(g2[0]));
+        for(size_t i =0; i<_groupSize; ++i)
+        {
+            Value const& v1 = g1[i];
+            Value const& v2 = *(g2[i]);
+            if(_groupComparators[i](v1, v2))
+            {
+                return true;
+            }
+            else if( v1 == v2 )
+            {
+                continue;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return false;
     }
 
     inline bool groupEqual(Value const* g1, std::vector<Value const*> const& g2) const
     {
-        return g1[0] == *(g2[0]);
+        for(size_t i =0; i<_groupSize; ++i)
+        {
+            Value const& v1 = g1[i];
+            Value const& v2 = *(g2[i]);
+            if( v1 != v2 )
+            {
+                return false;
+            }
+        }
+        return true;
     }
 };
 

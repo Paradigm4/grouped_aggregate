@@ -261,18 +261,23 @@ public:
     private:
         mgd::vector <mgd::list<HashTableEntry> > const& _data;
         mgd::vector<size_t> const& _hashes;
+        size_t const _groupSize;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
         mgd::list<HashTableEntry>::const_iterator _listIter;
+        vector<Value const*> _groupResult;
 
     public:
         /**
          * To get one, call AggregateHashTable::getIterator
          */
         const_iterator(mgd::vector <mgd::list<HashTableEntry> > const& data,
-                       mgd::vector<size_t> const& hashes):
+                       mgd::vector<size_t> const& hashes,
+                       size_t const groupSize):
           _data(data),
-          _hashes(hashes)
+          _hashes(hashes),
+          _groupSize(groupSize),
+          _groupResult(groupSize, NULL)
         {
             restart();
         }
@@ -349,6 +354,16 @@ public:
             return _listIter->groupPtr();
         }
 
+        vector<Value const*> const& getGroupVector()
+        {
+            Value const* g = getCurrentGroup();
+            for(size_t i =0; i<_groupSize; ++i)
+            {
+                _groupResult[i] = &(g[i]);
+            }
+            return _groupResult;
+        }
+
         Value const& getCurrentState() const
         {
             if (end())
@@ -361,7 +376,7 @@ public:
 
     const_iterator getIterator() const
     {
-        return const_iterator(_data, _hashes);
+        return const_iterator(_data, _hashes, _groupSize);
     }
 
     void logStuff()
