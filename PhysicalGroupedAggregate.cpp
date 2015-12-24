@@ -438,11 +438,14 @@ public:
 
     shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
     {
-        SortingAttributeInfos sortingAttributeInfos(2);
+        SortingAttributeInfos sortingAttributeInfos(settings.getGroupSize() + 1);
         sortingAttributeInfos[0].columnNo = 0;
         sortingAttributeInfos[0].ascent = true;
-        sortingAttributeInfos[1].columnNo = 1;
-        sortingAttributeInfos[1].ascent = true;
+        for(size_t g=0; g<settings.getGroupSize(); ++g)
+        {
+            sortingAttributeInfos[g+1].columnNo = g+1;
+            sortingAttributeInfos[g+1].ascent = true;
+        }
         SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, tcomp);
@@ -450,33 +453,47 @@ public:
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
-        AttributeID const groupAttribute = settings.getGroupAttributeIds()[0];
         AttributeID const aggregatedAttribute = settings.getInputAttributeId();
         ArenaPtr operatorArena = this->getArena();
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(settings, hashArena);
         AggregatePtr agg = settings.cloneAggregate();
-        shared_ptr<ConstArrayIterator> gaiter(inputArray->getConstIterator(settings.getGroupAttributeIds()[0]));
+        size_t const groupSize = settings.getGroupSize();
+        vector<shared_ptr<ConstArrayIterator> > gaiters(groupSize,NULL);
+        vector<shared_ptr<ConstChunkIterator> > gciters(groupSize,NULL);
+        for(size_t g=0; g<groupSize; ++g)
+        {
+            gaiters[g] = inputArray->getConstIterator( settings.getGroupAttributeIds()[g] );
+        }
         shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
-        shared_ptr<ConstChunkIterator> gciter, iciter;
+        shared_ptr<ConstChunkIterator> iciter;
         size_t const maxTableSize = 150*1024*1024;
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
-        vector<Value const*> group(1, NULL);
-        while(!gaiter->end())
+        vector<Value const*> group(groupSize, NULL);
+        while(!gaiters[0]->end())
         {
-            gciter=gaiter->getChunk().getConstIterator();
-            iciter=iaiter->getChunk().getConstIterator();
-            while(!gciter->end())
+            for(size_t g=0; g<groupSize; ++g)
             {
-                uint64_t hash;
-                group[0] = &gciter->getItem();
+                gciters[g] = gaiters[g]->getChunk().getConstIterator();
+            }
+            iciter=iaiter->getChunk().getConstIterator();
+            while(!gciters[0]->end())
+            {
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    group[g] = &gciters[g]->getItem();
+                }
                 if(!settings.groupValid(group))
                 {
-                    ++(*gciter);
+                    for(size_t g=0; g<groupSize; ++g)
+                    {
+                        ++(*(gciters[g]));
+                    }
                     ++(*iciter);
                     continue;
                 }
+                uint64_t hash;
                 Value const& input = iciter->getItem();
                 if(aht.usedBytes() < maxTableSize)
                 {
@@ -500,35 +517,53 @@ public:
                         aht.insert(group, input, agg);
                     }
                 }
-                ++(*gciter);
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    ++(*(gciters[g]));
+                }
                 ++(*iciter);
             }
-            ++(*gaiter);
+            for(size_t g=0; g<groupSize; ++g)
+            {
+                ++(*(gaiters[g]));
+            }
             ++(*iaiter);
         }
-        gaiter.reset();
-        iaiter.reset();
-        gciter.reset();
+        for(size_t g = 0; g<groupSize; ++g)
+        {
+            gciters[g].reset();
+            gaiters[g].reset();
+        }
         iciter.reset();
+        iaiter.reset();
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
         aht.sortKeys();
-        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
-        gaiter = arr->getConstIterator(1);
-        iaiter = arr->getConstIterator(2);
-        shared_ptr<ConstChunkIterator> hciter;
         aht.logStuff();
+        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
+        for(size_t g = 0; g<groupSize; ++g)
+        {
+            gaiters[g] = arr->getConstIterator(g+1);
+        }
+        iaiter = arr->getConstIterator(groupSize+1);
+        shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
         MergeWriter<Settings::MERGE> mergeWriter(settings, query);
         while(!haiter->end())
         {
             hciter = haiter->getChunk().getConstIterator();
-            gciter = gaiter->getChunk().getConstIterator();
+            for(size_t g = 0; g<groupSize; ++g)
+            {
+                gciters[g] = gaiters[g]->getChunk().getConstIterator();
+            }
             iciter = iaiter->getChunk().getConstIterator();
             while(!hciter->end())
             {
                 Value const& hash  = hciter->getItem();
-                group[0] = &(gciter->getItem());
+                for(size_t g = 0; g<groupSize; ++g)
+                {
+                    group[g] = &(gciters[g]->getItem());
+                }
                 Value const& input = iciter->getItem();
                 while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() ||
                                         (ahtIter.getCurrentHash() == hash.getUint64() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
@@ -545,24 +580,33 @@ public:
                     mergeWriter.writeValue(hash,group,input);
                 }
                 ++(*hciter);
-                ++(*gciter);
+                for(size_t g = 0; g<groupSize; ++g)
+                {
+                    ++(*(gciters[g]));
+                }
                 ++(*iciter);
             }
             ++(*haiter);
-            ++(*gaiter);
+            for(size_t g = 0; g<groupSize; ++g)
+            {
+                ++(*(gaiters[g]));
+            }
             ++(*iaiter);
         }
-        hciter.reset();
-        gciter.reset();
-        iciter.reset();
-        haiter.reset();
-        gaiter.reset();
-        iaiter.reset();
         while(!ahtIter.end())
         {
             mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getCurrentState());
             ahtIter.next();
         }
+        hciter.reset();
+        haiter.reset();
+        for(size_t g = 0; g<groupSize; ++g)
+        {
+            gciters[g].reset();
+            gaiters[g].reset();
+        }
+        iciter.reset();
+        iaiter.reset();
         return mergeWriter.finalize();
     }
 
