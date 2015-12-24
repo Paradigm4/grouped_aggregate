@@ -213,6 +213,28 @@ public:
         return true;
     }
 
+    inline bool groupLess(std::vector<Value const*> const& g1, std::vector<Value const*> const& g2) const
+    {
+        for(size_t i =0; i<_groupSize; ++i)
+        {
+            Value const& v1 = *(g1[i]);
+            Value const& v2 = *(g2[i]);
+            if(_groupComparators[i](v1, v2))
+            {
+                return true;
+            }
+            else if( v1 == v2 )
+            {
+                continue;
+            }
+            else
+            {
+                return false;
+            }
+        }
+        return false;
+    }
+
     inline bool groupLess(Value const* g1, std::vector<Value const*> const& g2) const
     {
         for(size_t i =0; i<_groupSize; ++i)
@@ -240,6 +262,20 @@ public:
         for(size_t i =0; i<_groupSize; ++i)
         {
             Value const& v1 = g1[i];
+            Value const& v2 = *(g2[i]);
+            if( v1 != v2 )
+            {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    inline bool groupEqual(std::vector<Value const*> g1, std::vector<Value const*> const& g2) const
+    {
+        for(size_t i =0; i<_groupSize; ++i)
+        {
+            Value const& v1 = *(g1[i]);
             Value const& v2 = *(g2[i]);
             if( v1 != v2 )
             {

@@ -613,14 +613,14 @@ public:
     shared_ptr<Array> globalMerge(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
         inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
-        AttributeComparator comparator( settings.getGroupAttributeTypes()[0] );
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
+        size_t const groupSize = settings.getGroupSize();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
-        vector<shared_ptr<ConstArrayIterator> > gaiters(numInstances);
-        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
         vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
-        vector<shared_ptr<ConstChunkIterator> > gciters(numInstances);
+        vector<shared_ptr<ConstArrayIterator> > gaiters(numInstances * groupSize);
+        vector<shared_ptr<ConstChunkIterator> > gciters(numInstances * groupSize);
+        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
         vector<shared_ptr<ConstChunkIterator> > vciters(numInstances);
         vector<Coordinates > positions(numInstances);
         size_t numClosed = 0;
@@ -634,25 +634,32 @@ public:
             if(!haiters[inst]->setPosition(positions[inst]))
             {
                 haiters[inst].reset();
-                gaiters[inst].reset();
-                vaiters[inst].reset();
                 hciters[inst].reset();
-                gciters[inst].reset();
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    gaiters[inst * groupSize + g].reset();
+                    gciters[inst * groupSize + g].reset();
+                }
+                vaiters[inst].reset();
                 vciters[inst].reset();
                 numClosed++;
             }
             else
             {
-                gaiters[inst] = inputArray->getConstIterator(1);
-                gaiters[inst]->setPosition(positions[inst]);
-                vaiters[inst] = inputArray->getConstIterator(2);
-                vaiters[inst]->setPosition(positions[inst]);
                 hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                gciters[inst] = gaiters[inst]->getChunk().getConstIterator();
+                for(size_t g =0; g<groupSize; ++g)
+                {
+                    gaiters[inst * groupSize + g] = inputArray->getConstIterator(1 + g);
+                    gaiters[inst * groupSize + g]->setPosition(positions[inst]);
+                    gciters[inst * groupSize + g] = gaiters[inst]->getChunk().getConstIterator();
+                }
+                vaiters[inst] = inputArray->getConstIterator(1 + groupSize);
+                vaiters[inst]->setPosition(positions[inst]);
                 vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
             }
         }
-        vector<Value const*> minGroup(1);
+        vector<Value const*> minGroup(groupSize, NULL);
+        vector<Value const*> curGroup(groupSize, NULL);
         while(numClosed < numInstances)
         {
             bool minHashSet = false;
@@ -664,11 +671,14 @@ public:
                     continue;
                 }
                 uint64_t hash    = hciters[inst]->getItem().getUint64();
-                Value const& grp = gciters[inst]->getItem();
-                if(!minHashSet || (hash < minHash || (hash == minHash && comparator(grp, *(minGroup[0]) ))))
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
+                }
+                if(!minHashSet || (hash < minHash || (hash == minHash && settings.groupLess(curGroup, minGroup))))
                 {
                     minHash = hash;
-                    minGroup[0] = &grp;
+                    minGroup = curGroup;
                     minHashSet = true;
                 }
             }
@@ -679,13 +689,19 @@ public:
                     continue;
                 }
                 uint64_t hash    = hciters[inst]->getItem().getUint64();
-                Value const& grp = gciters[inst]->getItem();
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
+                }
                 Value const& val = vciters[inst]->getItem();
-                if(hash == minHash && grp == *(minGroup[0]))
+                if(hash == minHash && settings.groupEqual(curGroup, minGroup))
                 {
                     output.writeState(hash, minGroup, val);
                     ++(*hciters[inst]);
-                    ++(*gciters[inst]);
+                    for(size_t g=0; g<groupSize; ++g)
+                    {
+                        ++(*gciters[inst * groupSize + g]);
+                    }
                     ++(*vciters[inst]);
                     if(hciters[inst]->end())
                     {
@@ -694,19 +710,25 @@ public:
                         if(!sp)
                         {
                             haiters[inst].reset();
-                            gaiters[inst].reset();
-                            vaiters[inst].reset();
                             hciters[inst].reset();
-                            gciters[inst].reset();
+                            for(size_t g=0; g<groupSize; ++g)
+                            {
+                                gaiters[inst * groupSize + g].reset();
+                                gciters[inst * groupSize + g].reset();
+                            }
+                            vaiters[inst].reset();
                             vciters[inst].reset();
                             numClosed++;
                         }
                         else
                         {
-                            gaiters[inst]->setPosition(positions[inst]);
-                            vaiters[inst]->setPosition(positions[inst]);
                             hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                            gciters[inst] = gaiters[inst]->getChunk().getConstIterator();
+                            for(size_t g=0; g<groupSize; ++g)
+                            {
+                                gaiters[inst * groupSize + g]->setPosition(positions[inst]);
+                                gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
+                            }
+                            vaiters[inst]->setPosition(positions[inst]);
                             vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
                         }
                     }
