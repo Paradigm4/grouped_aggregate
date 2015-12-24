@@ -651,7 +651,7 @@ public:
                 {
                     gaiters[inst * groupSize + g] = inputArray->getConstIterator(1 + g);
                     gaiters[inst * groupSize + g]->setPosition(positions[inst]);
-                    gciters[inst * groupSize + g] = gaiters[inst]->getChunk().getConstIterator();
+                    gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
                 }
                 vaiters[inst] = inputArray->getConstIterator(1 + groupSize);
                 vaiters[inst]->setPosition(positions[inst]);
@@ -696,7 +696,7 @@ public:
                 Value const& val = vciters[inst]->getItem();
                 if(hash == minHash && settings.groupEqual(curGroup, minGroup))
                 {
-                    output.writeState(hash, minGroup, val);
+                    output.writeState(hash, curGroup, val);
                     ++(*hciters[inst]);
                     for(size_t g=0; g<groupSize; ++g)
                     {

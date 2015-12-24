@@ -50,10 +50,7 @@ public:
              vector< shared_ptr<OperatorParam> > const& operatorParameters,
              bool logical,
              shared_ptr<Query>& query):
-        _groupAttributeIds      (1, dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectNo()),
-        _groupAttributeNames    (1, dynamic_pointer_cast<OperatorParamReference> (operatorParameters[0])->getObjectName()),
-        _groupAttributeTypes    (1, inputSchema.getAttributes()[_groupAttributeIds[0]].getType()),
-        _groupSize              (1),
+        _groupSize              (0),
         _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER) * 1024 * 1024 ),
         _maxTableSizeSet        ( false ),
         _spilloverChunkSize     ( 1000000 ),
@@ -66,20 +63,50 @@ public:
         _inputSorted            ( false ),
         _inputSortedSet         ( false )
     {
-        _aggregate = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) operatorParameters[1], inputSchema.getAttributes(), &_inputAttributeId, &_outputAttributeName);
-        _stateType = _aggregate->getStateType().typeId();
-        _outputAttributeType = _aggregate->getResultType().typeId();
+        for(size_t i = 0; i<operatorParameters.size(); ++i)
+        {
+            shared_ptr<OperatorParam> param = operatorParameters[i];
+            if (param->getParamType() == PARAM_AGGREGATE_CALL)
+            {
+                if(_aggregate.get() != NULL)
+                {
+                    throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate specified multiple times";
+                }
+                _aggregate = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &_inputAttributeId, &_outputAttributeName);
+                _stateType = _aggregate->getStateType().typeId();
+                _outputAttributeType = _aggregate->getResultType().typeId();
+                if(_aggregate->isOrderSensitive())
+                {
+                    throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
+                }
+                _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
+            }
+            else if(param->getParamType() == PARAM_ATTRIBUTE_REF)
+            {
+                shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
+                AttributeID attId = ref->getObjectNo();
+                string groupName  = ref->getObjectName();
+                TypeId groupType  = inputSchema.getAttributes()[attId].getType();
+                _groupAttributeIds.push_back(attId);
+                _groupAttributeNames.push_back(groupName);
+                _groupAttributeTypes.push_back(groupType);
+                _groupComparators.push_back(AttributeComparator(groupType));
+                _groupDfo.push_back(getDoubleFloatOther(groupType));
+                _groupSize++;
+            }
+        }
+        if(_aggregate.get() == NULL)
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate not specified";
+        }
+        if(_groupSize == 0)
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
+        }
         if(_inputAttributeId == INVALID_ATTRIBUTE_ID)
         {
             _inputAttributeId = _groupAttributeIds[0];
         }
-        if(_aggregate->isOrderSensitive())
-        {
-            throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
-        }
-        _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
-        _groupComparators.push_back(AttributeComparator(_groupAttributeTypes[0]));
-        _groupDfo.push_back(getDoubleFloatOther(_groupAttributeTypes[0]));
     }
 
     vector<AttributeID> const& getGroupAttributeIds() const

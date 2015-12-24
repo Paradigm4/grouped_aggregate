@@ -29,10 +29,22 @@ public:
         LogicalOperator(logicalName, alias)
     {
         ADD_PARAM_INPUT()
-        ADD_PARAM_IN_ATTRIBUTE_NAME("void")
-        ADD_PARAM_AGGREGATE_CALL()
+        ADD_PARAM_VARIES()
         //TODO
         _usage = "write me a usage, bro!\n";
+    }
+
+    std::vector<std::shared_ptr<OperatorParamPlaceholder> >
+    nextVaryParamPlaceholder(const std::vector< ArrayDesc> &schemas)
+    {
+        std::vector<std::shared_ptr<OperatorParamPlaceholder> > res;
+        if(_parameters.size()>=2)
+        {
+            res.push_back(END_OF_VARIES_PARAMS());
+        }
+        res.push_back(PARAM_AGGREGATE_CALL());
+        res.push_back(PARAM_IN_ATTRIBUTE_NAME("void"));
+        return res;
     }
 
     ArrayDesc inferSchema(vector< ArrayDesc> schemas, shared_ptr< Query> query)
