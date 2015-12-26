@@ -7,6 +7,8 @@ iquery -anq "remove(b_new)" > /dev/null 2>&1
 iquery -anq "remove(b_old)" > /dev/null 2>&1
 iquery -anq "remove(c_new)" > /dev/null 2>&1
 iquery -anq "remove(c_old)" > /dev/null 2>&1
+iquery -anq "remove(ac_new)" > /dev/null 2>&1
+iquery -anq "remove(ac_old)" > /dev/null 2>&1
 
 iquery -anq "
 store(
@@ -52,6 +54,23 @@ store(
  c_old
 )"
 
+time iquery -naq "store(grouped_aggregate(foo, a, c, avg(val)), ac_new)"
+time iquery -naq "
+store(
+ redimension(
+  index_lookup(
+   index_lookup(foo as A, uniq(sort(project(filter(foo, is_nan(c) = false), c))), A.c, cidx), 
+   uniq(sort(project(foo, a))),
+   A.a, 
+   aidx
+  ),
+  <a:string null, c:double null, val_avg: double null> [aidx=0:*,1000,0, cidx=0:*,1000,0],
+  max(a) as a, max(c) as c, avg(val)
+ ),
+ ac_old
+)"
+
+
 iquery -aq "op_count(a_new)" > test.out
 iquery -aq "op_count(a_old)" >> test.out
 iquery -aq "aggregate(apply(join(sort(a_new,a), sort(a_old,a)), z, iif(a_new.val_var=a_old.val_var, 1,0)), sum(z))" >> test.out
@@ -63,5 +82,11 @@ iquery -aq "aggregate(apply(join(sort(b_new,b), sort(b_old,b)), z, iif(b_new.val
 iquery -aq "op_count(c_new)" >> test.out
 iquery -aq "op_count(c_old)" >> test.out
 iquery -aq "aggregate(apply(join(sort(c_new,c), sort(c_old,c)), z, iif(c_new.val_avg=c_old.val_avg, 1,0)), sum(z))" >> test.out
+
+iquery -aq "op_count(ac_new)" >> test.out
+iquery -aq "op_count(ac_old)" >> test.out
+iquery -aq "aggregate(apply(join(sort(ac_new,a,c), sort(ac_old,a,c)), z, iif(ac_new.val_avg=ac_old.val_avg, 1,0)), sum(z))" >> test.out
+
+
 
 diff test.out test.expected
