@@ -158,9 +158,12 @@ public:
 
     void writeValue (Value const& hash, vector<Value const*> const& group, Value const& item)
     {
-        if(SCHEMA_TYPE == Settings::SPILL && _curHash.getMissingReason() != 0)
+        if(SCHEMA_TYPE == Settings::SPILL )
         {
-            writeCurrent();
+            if(_curHash.getMissingReason() != 0)
+            {
+                writeCurrent();
+            }
             _curHash = hash;
             copyGroup(group);
             _curState = item;
