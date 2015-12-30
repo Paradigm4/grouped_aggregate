@@ -21,10 +21,8 @@ using std::dynamic_pointer_cast;
 class Settings
 {
 private:
-    vector<AttributeID> _groupAttributeIds;
-    vector<string> _groupAttributeNames;
-    vector<TypeId> _groupAttributeTypes;
     size_t _groupSize;
+    size_t _numAggs;
     size_t _maxTableSize;
     bool   _maxTableSizeSet;
     size_t _spilloverChunkSize;
@@ -36,14 +34,17 @@ private:
     size_t const _numInstances;
     bool   _inputSorted;
     bool   _inputSortedSet;
-    TypeId _inputAttributeType;
-    TypeId _stateType;
-    TypeId _outputAttributeType;
-    AttributeID  _inputAttributeId;
-    string _outputAttributeName;
-    AggregatePtr _aggregate;
+    vector<AttributeID> _groupAttributeIds;
+    vector<string> _groupAttributeNames;
+    vector<TypeId> _groupAttributeTypes;
     vector<AttributeComparator> _groupComparators;
-    vector<DoubleFloatOther>    _groupDfo;
+    vector<DoubleFloatOther> _groupDfo;
+    vector<AggregatePtr> _aggregates;
+    vector<TypeId> _inputAttributeTypes;
+    vector<TypeId> _stateTypes;
+    vector<TypeId> _outputAttributeTypes;
+    vector<AttributeID> _inputAttributeIds;
+    vector<string> _outputAttributeNames;
 
 public:
     Settings(ArrayDesc const& inputSchema,
@@ -51,6 +52,7 @@ public:
              bool logical,
              shared_ptr<Query>& query):
         _groupSize              (0),
+        _numAggs                (0),
         _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER) * 1024 * 1024 ),
         _maxTableSizeSet        ( false ),
         _spilloverChunkSize     ( 1000000 ),
@@ -68,18 +70,24 @@ public:
             shared_ptr<OperatorParam> param = operatorParameters[i];
             if (param->getParamType() == PARAM_AGGREGATE_CALL)
             {
-                if(_aggregate.get() != NULL)
+                if(_aggregates.size() > 0)
                 {
                     throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate specified multiple times";
                 }
-                _aggregate = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &_inputAttributeId, &_outputAttributeName);
-                _stateType = _aggregate->getStateType().typeId();
-                _outputAttributeType = _aggregate->getResultType().typeId();
-                if(_aggregate->isOrderSensitive())
+                AttributeID inputAttId;
+                string outputAttName;
+                AggregatePtr agg = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &inputAttId, &outputAttName);
+                _aggregates.push_back(agg);
+                _stateTypes.push_back(agg->getStateType().typeId());
+                _outputAttributeTypes.push_back(agg->getResultType().typeId());
+                if(agg->isOrderSensitive())
                 {
-                    throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << _aggregate->getName();
+                    throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << agg->getName();
                 }
-                _inputAttributeType = inputSchema.getAttributes()[_inputAttributeId].getType();
+                _inputAttributeTypes.push_back(inputSchema.getAttributes()[inputAttId].getType());
+                _inputAttributeIds.push_back(inputAttId);
+                _outputAttributeNames.push_back(outputAttName);
+                ++_numAggs;
             }
             else if(param->getParamType() == PARAM_ATTRIBUTE_REF)
             {
@@ -92,20 +100,29 @@ public:
                 _groupAttributeTypes.push_back(groupType);
                 _groupComparators.push_back(AttributeComparator(groupType));
                 _groupDfo.push_back(getDoubleFloatOther(groupType));
-                _groupSize++;
+                ++_groupSize;
             }
         }
-        if(_aggregate.get() == NULL)
+        if(_numAggs == 0)
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate not specified";
+        }
+        if(_numAggs > 1)
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Multiple aggregates not yet supported";
         }
         if(_groupSize == 0)
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
-        if(_inputAttributeId == INVALID_ATTRIBUTE_ID)
+        for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
-            _inputAttributeId = _groupAttributeIds[0];
+            AttributeID& inAttId = _inputAttributeIds[i];
+            if (inAttId == INVALID_ATTRIBUTE_ID)
+            {
+                inAttId = _groupAttributeIds[0];
+            }
+            _inputAttributeTypes.push_back(inputSchema.getAttributes()[inAttId].getType());
         }
     }
 
@@ -124,34 +141,34 @@ public:
         return _groupAttributeTypes;
     }
 
-    TypeId const& getInputAttributeType() const
+    vector<TypeId> const& getInputAttributeTypes() const
     {
-        return _inputAttributeType;
+        return _inputAttributeTypes;
     }
 
-    AttributeID getInputAttributeId() const
+    vector<AttributeID> const& getInputAttributeIds() const
     {
-        return _inputAttributeId;
+        return _inputAttributeIds;
     }
 
-    string const& getOutputAttributeName() const
+    vector<string> const& getOutputAttributeNames() const
     {
-        return _outputAttributeName;
+        return _outputAttributeNames;
     }
 
-    TypeId const& getStateType() const
+    vector<TypeId> const& getStateTypes() const
     {
-        return _stateType;
+        return _stateTypes;
     }
 
-    TypeId const& getResultType() const
+    vector<TypeId> const& getResultTypes() const
     {
-        return _outputAttributeType;
+        return _outputAttributeTypes;
     }
 
     AggregatePtr cloneAggregate() const
     {
-        return _aggregate->clone();
+        return _aggregates[0]->clone();
     }
 
     size_t getMaxTableSize() const
@@ -198,12 +215,15 @@ public:
         {
             outputAttributes.push_back( AttributeDesc(i++, _groupAttributeNames[j],  _groupAttributeTypes[j], 0, 0));
         }
-        outputAttributes.push_back( AttributeDesc(i++,
-                                                  _outputAttributeName,
-                                                  type == SPILL ? _inputAttributeType :
-                                                  type == MERGE ? _stateType :
-                                                                  _outputAttributeType,
-                                                  AttributeDesc::IS_NULLABLE, 0));
+        for (size_t j =0; j<_numAggs; ++j)
+        {
+            outputAttributes.push_back( AttributeDesc(i++,
+                                                      _outputAttributeNames[j],
+                                                      type == SPILL ? _inputAttributeTypes[j] :
+                                                      type == MERGE ? _stateTypes[j] :
+                                                                      _outputAttributeTypes[j],
+                                                      AttributeDesc::IS_NULLABLE, 0));
+        }
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
         if(type == MERGE)
@@ -227,6 +247,10 @@ public:
         return _groupSize;
     }
 
+    /**
+     * Determine if g is a valid group for aggregation. g must be getGroupSize() large.
+     * @return true if g is a valid aggregation group, false otherwise.
+     */
     inline bool groupValid(std::vector<Value const*> const& g) const
     {
         for(size_t i =0; i<_groupSize; ++i)
@@ -240,6 +264,10 @@ public:
         return true;
     }
 
+    /**
+     * Compare two groups, both must have getGroupSize() values and be groupValid().
+     * @return true if g1 < g2, false otherwise.
+     */
     inline bool groupLess(std::vector<Value const*> const& g1, std::vector<Value const*> const& g2) const
     {
         for(size_t i =0; i<_groupSize; ++i)
@@ -262,6 +290,11 @@ public:
         return false;
     }
 
+
+    /**
+     * Compare two groups, both must have getGroupSize() values and be groupValid(). g1 is assumed c-style allocated.
+     * @return true if g1 < g2, false otherwise.
+     */
     inline bool groupLess(Value const* g1, std::vector<Value const*> const& g2) const
     {
         for(size_t i =0; i<_groupSize; ++i)
@@ -284,11 +317,15 @@ public:
         return false;
     }
 
-    inline bool groupEqual(Value const* g1, std::vector<Value const*> const& g2) const
+    /**
+     * Compare two groups, both must have getGroupSize() values and be groupValid().
+     * @return true if g1 is equivalent g2, false otherwise.
+     */
+    inline bool groupEqual(std::vector<Value const*> g1, std::vector<Value const*> const& g2) const
     {
         for(size_t i =0; i<_groupSize; ++i)
         {
-            Value const& v1 = g1[i];
+            Value const& v1 = *(g1[i]);
             Value const& v2 = *(g2[i]);
             if( v1 != v2 )
             {
@@ -298,11 +335,15 @@ public:
         return true;
     }
 
-    inline bool groupEqual(std::vector<Value const*> g1, std::vector<Value const*> const& g2) const
+    /**
+     * Compare two groups, both must have getGroupSize() values and be groupValid(). g1 is assumed c-style allocated.
+     * @return true if g1 is equivalent g2, false otherwise.
+     */
+    inline bool groupEqual(Value const* g1, std::vector<Value const*> const& g2) const
     {
         for(size_t i =0; i<_groupSize; ++i)
         {
-            Value const& v1 = *(g1[i]);
+            Value const& v1 = g1[i];
             Value const& v2 = *(g2[i]);
             if( v1 != v2 )
             {

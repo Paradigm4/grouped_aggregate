@@ -456,7 +456,7 @@ public:
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
-        AttributeID const aggregatedAttribute = settings.getInputAttributeId();
+        AttributeID const aggregatedAttribute = settings.getInputAttributeIds()[0];
         ArenaPtr operatorArena = this->getArena();
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(settings, hashArena);
@@ -468,7 +468,7 @@ public:
         {
             gaiters[g] = inputArray->getConstIterator( settings.getGroupAttributeIds()[g] );
         }
-        shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeId()));
+        shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeIds()[0]));
         shared_ptr<ConstChunkIterator> iciter;
         size_t const maxTableSize = 150*1024*1024;
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
