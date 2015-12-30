@@ -196,6 +196,11 @@ public:
         return _inputSorted;
     }
 
+    size_t getNumAggs() const
+    {
+        return _numAggs;
+    }
+
     enum SchemaType
     {
         SPILL,
@@ -351,6 +356,38 @@ public:
             }
         }
         return true;
+    }
+
+    inline void aggInitState(Value* states)
+    {
+        for(size_t i=0; i<_numAggs; ++i)
+        {
+            _aggregates[i]->initializeState( states[i] );
+        }
+    }
+
+    inline void aggAccumulate(Value* states, std::vector<Value const*> const& inputs)
+    {
+        for(size_t i=0; i<_numAggs; ++i)
+        {
+            _aggregates[i]->accumulateIfNeeded( states[i], *(inputs[i]));
+        }
+    }
+
+    inline void aggMerge(Value* states, std::vector<Value const*> const& inStates)
+    {
+        for(size_t i=0; i<_numAggs; ++i)
+        {
+            _aggregates[i]->mergeIfNeeded( states[i], *(inStates[i]));
+        }
+    }
+
+    inline void aggFinal(Value* results, std::vector<Value const*> const& inStates)
+    {
+        for(size_t i=0; i<_numAggs; ++i)
+        {
+            _aggregates[i]->finalResult( results[i], *(inStates[i]));
+        }
     }
 };
 

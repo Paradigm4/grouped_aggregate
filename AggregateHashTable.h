@@ -111,10 +111,10 @@ struct HashTableEntry
 {
     uint64_t hash;
     mgd::vector<Value> group;
-    Value    state;
+    mgd::vector<Value> state;
 
-    HashTableEntry(ArenaPtr& arena, size_t const groupSize, uint64_t const h, std::vector<Value const*> g):
-      hash(h), group(arena, groupSize)
+    HashTableEntry(ArenaPtr& arena, size_t const groupSize, size_t const numAggs, uint64_t const h, std::vector<Value const*> g):
+      hash(h), group(arena, groupSize), state(arena, numAggs)
     {
         for(size_t i=0; i<groupSize; ++i)
         {
@@ -126,6 +126,11 @@ struct HashTableEntry
     {
         return &(group[0]);
     }
+
+    Value *     statePtr()
+    {
+        return &(state[0]);
+    }
 };
 
 class AggregateHashTable
@@ -133,21 +138,23 @@ class AggregateHashTable
 private:
     ArenaPtr                                 _arena;
     size_t const                             _groupSize;
+    size_t const                             _numAggs;
     mgd::vector< mgd::list<HashTableEntry> > _data;
     mgd::list<HashTableEntry>::iterator      _iter;
-    Settings const&                          _settings;
+    Settings&                                _settings;
     mgd::vector<uint64_t>                    _hashes;
     Value const*                             _lastGroup;
-    Value    *                               _lastState;
+    Value *                                  _lastState;
     ssize_t                                  _largeValueMemory;
     size_t                                   _numGroups;
 
 public:
     static size_t const NUM_BUCKETS      = 1000037;
 
-    AggregateHashTable(Settings const& settings, ArenaPtr const& arena):
+    AggregateHashTable(Settings& settings, ArenaPtr const& arena):
         _arena(arena),
         _groupSize(settings.getGroupSize()),
+        _numAggs(settings.getNumAggs()),
         _data(_arena, NUM_BUCKETS, mgd::list<HashTableEntry>(_arena)),
         _settings(settings),
         _hashes(_arena, 0),
@@ -157,11 +164,13 @@ public:
         _numGroups(0)
     {}
 
-    void insert(std::vector<Value const*> const& group, Value const& item, AggregatePtr& aggregate)
+    void insert(std::vector<Value const*> const& group, vector<Value const*> input)
     {
+        //vector<Value const*> input;
+        //input.push_back(&item);
         if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
-            aggregate->accumulateIfNeeded(*_lastState, item);
+            _settings.aggAccumulate(_lastState, input);
             return;
         }
         uint64_t hash = hashGroup(group, _groupSize);
@@ -183,7 +192,14 @@ public:
         ssize_t initialStateSize = 0;
         if(_iter != list.end() && _iter->hash == hash && _settings.groupEqual(_iter->groupPtr(), group))
         {
-            initialStateSize = _iter->state.isLarge() ? _iter->state.size() : 0;
+            Value *st = _iter->statePtr();
+            for(size_t a=0; a<_numAggs; ++a)
+            {
+                if(st[a].isLarge())
+                {
+                    initialStateSize += st[a].size();
+                }
+            }
         }
         else
         {
@@ -191,7 +207,7 @@ public:
             {
                 _hashes.push_back(hash);
             }
-            _iter = list.emplace(_iter, _arena, _groupSize, hash, group);
+            _iter = list.emplace(_iter, _arena, _groupSize, _numAggs, hash, group);
             for(size_t i =0; i<_groupSize; ++i)
             {
                 if(group[i]->isLarge())
@@ -200,13 +216,21 @@ public:
                 }
             }
             ++_numGroups;
-            aggregate->initializeState( _iter->state);
+            _settings.aggInitState(_iter->statePtr());
         }
-        aggregate->accumulateIfNeeded(_iter->state, item);
-        ssize_t finalStateSize   = _iter->state.isLarge() ? _iter->state.size() : 0;
+        _settings.aggAccumulate(_iter->statePtr(), input);
+        ssize_t finalStateSize   = 0;
+        Value *st = _iter->statePtr();
+        for(size_t a=0; a<_numAggs; ++a)
+        {
+            if(st[a].isLarge())
+            {
+                finalStateSize += st[a].size();
+            }
+        }
         _largeValueMemory += (finalStateSize - initialStateSize);
         _lastGroup = _iter->groupPtr();
-        _lastState = &_iter->state;
+        _lastState = &(_iter->state[0]);
     }
 
     /**
@@ -364,13 +388,13 @@ public:
             return _groupResult;
         }
 
-        Value const& getCurrentState() const
+        Value const* getCurrentState() const
         {
             if (end())
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return _listIter->state;
+            return &(_listIter->state[0]);
         }
     };
 

@@ -498,9 +498,10 @@ public:
                 }
                 uint64_t hash;
                 Value const& input = iciter->getItem();
+                vector<Value const*> inVec(1,&input);
                 if(aht.usedBytes() < maxTableSize)
                 {
-                    aht.insert(group, input, agg);
+                    aht.insert(group, inVec);
                 }
                 else
                 {
@@ -517,7 +518,7 @@ public:
                     }
                     else
                     {
-                        aht.insert(group, input, agg);
+                        aht.insert(group, inVec);
                     }
                 }
                 for(size_t g=0; g<groupSize; ++g)
@@ -571,7 +572,7 @@ public:
                 while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() ||
                                         (ahtIter.getCurrentHash() == hash.getUint64() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
                 {
-                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getCurrentState());
+                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), *ahtIter.getCurrentState());
                     ahtIter.next();
                 }
                 if(settings.inputSorted())
@@ -598,7 +599,7 @@ public:
         }
         while(!ahtIter.end())
         {
-            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getCurrentState());
+            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), *ahtIter.getCurrentState());
             ahtIter.next();
         }
         hciter.reset();
