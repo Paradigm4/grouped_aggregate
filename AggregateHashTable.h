@@ -164,10 +164,8 @@ public:
         _numGroups(0)
     {}
 
-    void insert(std::vector<Value const*> const& group, vector<Value const*> input)
+    void insert(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
     {
-        //vector<Value const*> input;
-        //input.push_back(&item);
         if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
             _settings.aggAccumulate(_lastState, input);
