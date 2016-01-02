@@ -157,14 +157,14 @@ private:
     }
 
 public:
-    void writeValue (uint64_t const hash, vector<Value const*> const& group, Value const& item)
+    void writeValue (uint64_t const hash, vector<Value const*> const& group, vector<Value const*> const& inputs)
     {
         Value buf;
         buf.setUint64(hash);
-        writeValue(buf, group, item);
+        writeValue(buf, group, inputs);
     }
 
-    void writeValue (Value const& hash, vector<Value const*> const& group, Value const& item)
+    void writeValue (Value const& hash, vector<Value const*> const& group, vector<Value const*> const& inputs)
     {
         if(SCHEMA_TYPE == Settings::SPILL )
         {
@@ -174,7 +174,10 @@ public:
             }
             _curHash = hash;
             copyGroup(group);
-            _curStates[0] = item;
+            for(size_t i =0; i<_numAggs; ++i)
+            {
+                _curStates[i] = *(inputs[i]);
+            }
         }
         else
         {
@@ -188,19 +191,18 @@ public:
                 copyGroup(group);
                 _settings.aggInitState(&(_curStates[0]));
             }
-            vector<Value const*> input(1, &item);
-            _settings.aggAccumulate(&(_curStates[0]), input);
+            _settings.aggAccumulate(&(_curStates[0]), inputs);
         }
     }
 
-    void writeState (uint64_t const hash, vector<Value const*> const& group, Value const& state)
+    void writeState (uint64_t const hash, vector<Value const*> const& group, vector<Value const*> const& states)
     {
         Value buf;
         buf.setUint64(hash);
-        writeState(buf, group, state);
+        writeState(buf, group, states);
     }
 
-    void writeState (Value const& hash, vector<Value const*> const& group, Value const& state)
+    void writeState (Value const& hash, vector<Value const*> const& group, vector<Value const*> const& states)
     {
         if(SCHEMA_TYPE == Settings::SPILL)
         {
@@ -218,8 +220,7 @@ public:
                 copyGroup(group);
                 _settings.aggInitState(&(_curStates[0]));
             }
-            vector<Value const*> input(1, &state);
-            _settings.aggMerge(&(_curStates[0]), input);
+            _settings.aggMerge(&(_curStates[0]), states);
         }
     }
 
@@ -441,11 +442,11 @@ public:
                     {
                         if(settings.inputSorted())
                         {
-                            flatCondensed.writeValue(hash, group, input);
+                            flatCondensed.writeValue(hash, group, inVec);
                         }
                         else
                         {
-                            flatWriter.writeValue(hash, group, input);
+                            flatWriter.writeValue(hash, group, inVec);
                         }
                     }
                     else
@@ -485,6 +486,7 @@ public:
         shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
         MergeWriter<Settings::MERGE> mergeWriter(settings, query);
+        vector<Value const*> input(1, NULL);
         while(!haiter->end())
         {
             hciter = haiter->getChunk().getConstIterator();
@@ -500,11 +502,11 @@ public:
                 {
                     group[g] = &(gciters[g]->getItem());
                 }
-                Value const& input = iciter->getItem();
+                input[0] = &(iciter->getItem());
                 while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() ||
                                         (ahtIter.getCurrentHash() == hash.getUint64() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
                 {
-                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), *ahtIter.getCurrentState());
+                    mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getStateVector());
                     ahtIter.next();
                 }
                 if(settings.inputSorted())
@@ -531,7 +533,7 @@ public:
         }
         while(!ahtIter.end())
         {
-            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), *ahtIter.getCurrentState());
+            mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getStateVector());
             ahtIter.next();
         }
         hciter.reset();
@@ -596,6 +598,7 @@ public:
         }
         vector<Value const*> minGroup(groupSize, NULL);
         vector<Value const*> curGroup(groupSize, NULL);
+        vector<Value const*> curState(1, NULL);
         while(numClosed < numInstances)
         {
             bool minHashSet = false;
@@ -629,10 +632,10 @@ public:
                 {
                     curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
                 }
-                Value const& val = vciters[inst]->getItem();
+                curState[0] = &(vciters[inst]->getItem());
                 if(hash == minHash && settings.groupEqual(curGroup, minGroup))
                 {
-                    output.writeState(hash, curGroup, val);
+                    output.writeState(hash, curGroup, curState);
                     ++(*hciters[inst]);
                     for(size_t g=0; g<groupSize; ++g)
                     {

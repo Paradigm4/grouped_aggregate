@@ -399,7 +399,7 @@ public:
             return &(_listIter->state[0]);
         }
 
-        vector<Value const*> const& getAggVector()
+        vector<Value const*> const& getStateVector()
         {
             Value const* s = getCurrentState();
             for(size_t i =0; i<_numAggs; ++i)
