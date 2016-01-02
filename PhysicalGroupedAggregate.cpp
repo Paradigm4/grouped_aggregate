@@ -57,34 +57,34 @@ class MergeWriter : public boost::noncopyable
 private:
     shared_ptr<Array> _output;
     size_t const _groupSize;
+    size_t const _numAggs;
     size_t const _chunkSize;
     size_t const _numInstances;
     InstanceID const _myInstanceId;
-    AggregatePtr     _aggregate;
     vector<uint64_t> _hashBreaks;
     size_t _currentBreak;
     shared_ptr<Query> _query;
-    Settings const& _settings;
+    Settings& _settings;
     Coordinates _outputPosition;
     Coordinate& _outputValueNo;
     shared_ptr<ArrayIterator> _hashArrayIterator;
     shared_ptr<ChunkIterator> _hashChunkIterator;
     vector<shared_ptr<ArrayIterator> > _groupArrayIterators;
     vector<shared_ptr<ChunkIterator> > _groupChunkIterators;
-    shared_ptr<ArrayIterator> _itemArrayIterator;
-    shared_ptr<ChunkIterator> _itemChunkIterator;
+    vector<shared_ptr<ArrayIterator> >_itemArrayIterators;
+    vector<shared_ptr<ChunkIterator> >_itemChunkIterators;
     Value            _curHash;
     vector<Value>    _curGroup;
-    Value            _curState;
+    vector<Value>    _curStates;
 
 public:
-    MergeWriter(Settings const& settings, shared_ptr<Query> const& query, string const name = ""):
+    MergeWriter(Settings& settings, shared_ptr<Query> const& query, string const name = ""):
         _output(make_shared<MemArray>(settings.makeSchema(SCHEMA_TYPE, name), query)),
         _groupSize(settings.getGroupSize()),
+        _numAggs(settings.getNumAggs()),
         _chunkSize(_output->getArrayDesc().getDimensions()[_output->getArrayDesc().getDimensions().size()-1].getChunkInterval()),
         _numInstances(query->getInstancesCount()),
         _myInstanceId(query->getInstanceID()),
-        _aggregate(settings.cloneAggregate()),
         _hashBreaks(_numInstances-1,0),
         _query(query),
         _settings(settings),
@@ -98,16 +98,20 @@ public:
         _hashChunkIterator(NULL),
         _groupArrayIterators(_groupSize, NULL),
         _groupChunkIterators(_groupSize, NULL),
-        _itemArrayIterator(NULL),
-        _itemChunkIterator(NULL),
-        _curGroup(_groupSize)
+        _itemArrayIterators(_numAggs, NULL),
+        _itemChunkIterators(_numAggs, NULL),
+        _curGroup(_groupSize),
+        _curStates(_numAggs)
     {
         _curHash.setNull(0);
         for(size_t i=0; i<_groupSize; ++i)
         {
-            _curGroup[_groupSize].setNull(0);
+            _curGroup[i].setNull(0);
         }
-        _curState.setNull(0);
+        for(size_t i=0; i<_numAggs; ++i)
+        {
+            _curStates[i].setNull(0);
+        }
         uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
         for(size_t i=0; i<_numInstances-1; ++i)
         {
@@ -131,12 +135,16 @@ public:
             _hashArrayIterator = _output->getIterator(i);
             ++i;
         }
-        for(AttributeID j =0; j<_groupSize; ++j)
+        for(size_t j =0; j<_groupSize; ++j)
         {
             _groupArrayIterators[j] = _output->getIterator(i);
             ++i;
         }
-        _itemArrayIterator = _output->getIterator(i);
+        for(size_t j=0; j<_numAggs; ++j)
+        {
+            _itemArrayIterators[j] = _output->getIterator(i);
+            ++i;
+        }
     }
 
 private:
@@ -166,7 +174,7 @@ public:
             }
             _curHash = hash;
             copyGroup(group);
-            _curState = item;
+            _curStates[0] = item;
         }
         else
         {
@@ -178,9 +186,10 @@ public:
                 }
                 _curHash = hash;
                 copyGroup(group);
-                _aggregate->initializeState(_curState);
+                _settings.aggInitState(&(_curStates[0]));
             }
-            _aggregate->accumulateIfNeeded(_curState, item);
+            vector<Value const*> input(1, &item);
+            _settings.aggAccumulate(&(_curStates[0]), input);
         }
     }
 
@@ -207,9 +216,10 @@ public:
                 }
                 _curHash = hash;
                 copyGroup(group);
-                _aggregate->initializeState(_curState);
+                _settings.aggInitState(&(_curStates[0]));
             }
-            _aggregate->mergeIfNeeded(_curState, state);
+            vector<Value const*> input(1, &state);
+            _settings.aggMerge(&(_curStates[0]), input);
         }
     }
 
@@ -255,12 +265,16 @@ private:
                                                 i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
                 ++i;
             }
-            if(_itemChunkIterator.get())
+            for(size_t j =0; j<_numAggs; ++j)
             {
-                _itemChunkIterator->flush();
+                if(_itemChunkIterators[j].get())
+                {
+                    _itemChunkIterators[j]->flush();
+                }
+                _itemChunkIterators[j] = _itemArrayIterators[j] -> newChunk(_outputPosition).getIterator(_query,
+                                               i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
+                ++i;
             }
-            _itemChunkIterator = _itemArrayIterator -> newChunk(_outputPosition).getIterator(_query,
-                                            i == 0 ? ChunkIterator::SEQUENTIAL_WRITE : ChunkIterator::SEQUENTIAL_WRITE | ChunkIterator::NO_EMPTY_CHECK);
         }
         if(SCHEMA_TYPE != Settings::FINAL)
         {
@@ -272,16 +286,23 @@ private:
             _groupChunkIterators[j]->setPosition(_outputPosition);
             _groupChunkIterators[j]->writeItem(_curGroup[j]);
         }
-        _itemChunkIterator->setPosition(_outputPosition);
         if(SCHEMA_TYPE == Settings::FINAL)
         {
-            Value result;
-            _aggregate->finalResult(result, _curState);
-            _itemChunkIterator->writeItem(result);
+            vector<Value> result(_numAggs);
+            _settings.aggFinal(&(result[0]), &(_curStates[0]));
+            for (size_t j=0; j<_numAggs; ++j)
+            {
+                _itemChunkIterators[j]->setPosition(_outputPosition);
+                _itemChunkIterators[j]->writeItem(result[j]);
+            }
         }
         else
         {
-            _itemChunkIterator->writeItem(_curState);
+            for (size_t j=0; j<_numAggs; ++j)
+            {
+                _itemChunkIterators[j]->setPosition(_outputPosition);
+                _itemChunkIterators[j]->writeItem(_curStates[j]);
+            }
         }
         ++_outputValueNo;
     }
@@ -308,109 +329,20 @@ public:
             _groupChunkIterators[j].reset();
             _groupArrayIterators[j].reset();
         }
-        if(_itemChunkIterator.get())
+        for(size_t j =0; j<_numAggs; ++j)
         {
-            _itemChunkIterator->flush();
+            if(_itemChunkIterators[j].get())
+            {
+                _itemChunkIterators[j]->flush();
+            }
+            _itemChunkIterators[j].reset();
+            _itemArrayIterators[j].reset();
         }
-        _itemChunkIterator.reset();
-        _itemArrayIterator.reset();
         shared_ptr<Array> result = _output;
         _output.reset();
         return result;
     }
 };
-
-class ArrayCursor
-{
-private:
-    shared_ptr<Array> _input;
-    size_t const _nAttrs;
-    vector <Value const *> _currentCell;
-    bool _end;
-    vector<shared_ptr<ConstArrayIterator> > _inputArrayIters;
-    vector<shared_ptr<ConstChunkIterator> > _inputChunkIters;
-
-public:
-    ArrayCursor (shared_ptr<Array> const& input):
-        _input(input),
-        _nAttrs(input->getArrayDesc().getAttributes(true).size()),
-        _currentCell(_nAttrs, 0),
-        _end(false),
-        _inputArrayIters(_nAttrs, 0),
-        _inputChunkIters(_nAttrs, 0)
-    {
-        for(size_t i =0; i<_nAttrs; ++i)
-        {
-            _inputArrayIters[i] = _input->getConstIterator(i);
-        }
-        if (_inputArrayIters[0]->end())
-        {
-            _end=true;
-        }
-        else
-        {
-            advance();
-        }
-    }
-
-    bool end() const
-    {
-        return _end;
-    }
-
-    size_t nAttrs() const
-    {
-        return _nAttrs;
-    }
-
-    void advance()
-    {
-        if(_end)
-        {
-            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Internal error: iterating past end of cursor";
-        }
-        if (_inputChunkIters[0] == 0) //1st time!
-        {
-            for(size_t i =0; i<_nAttrs; ++i)
-            {
-                _inputChunkIters[i] = _inputArrayIters[i]->getChunk().getConstIterator(ConstChunkIterator::IGNORE_OVERLAPS | ConstChunkIterator::IGNORE_EMPTY_CELLS);
-            }
-        }
-        else if (!_inputChunkIters[0]->end()) //not first time!
-        {
-            for(size_t i =0; i<_nAttrs; ++i)
-            {
-                ++(*_inputChunkIters[i]);
-            }
-        }
-        while(_inputChunkIters[0]->end())
-        {
-            for(size_t i =0; i<_nAttrs; ++i)
-            {
-                ++(*_inputArrayIters[i]);
-            }
-            if(_inputArrayIters[0]->end())
-            {
-                _end = true;
-                return;
-            }
-            for(size_t i =0; i<_nAttrs; ++i)
-            {
-                _inputChunkIters[i] = _inputArrayIters[i]->getChunk().getConstIterator(ConstChunkIterator::IGNORE_OVERLAPS | ConstChunkIterator::IGNORE_EMPTY_CELLS);
-            }
-        }
-        for(size_t i =0; i<_nAttrs; ++i)
-        {
-            _currentCell[i] = &(_inputChunkIters[i]->getItem());
-        }
-    }
-
-    vector <Value const *> const& getCell()
-    {
-        return _currentCell;
-    }
-};
-
 
 } //namespace grouped_aggregate
 

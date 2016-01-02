@@ -284,10 +284,12 @@ public:
         mgd::vector <mgd::list<HashTableEntry> > const& _data;
         mgd::vector<size_t> const& _hashes;
         size_t const _groupSize;
+        size_t const _numAggs;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
         mgd::list<HashTableEntry>::const_iterator _listIter;
         vector<Value const*> _groupResult;
+        vector<Value const*> _aggStateResult;
 
     public:
         /**
@@ -295,11 +297,13 @@ public:
          */
         const_iterator(mgd::vector <mgd::list<HashTableEntry> > const& data,
                        mgd::vector<size_t> const& hashes,
-                       size_t const groupSize):
+                       size_t const groupSize, size_t const numAggs):
           _data(data),
           _hashes(hashes),
           _groupSize(groupSize),
-          _groupResult(groupSize, NULL)
+          _numAggs(numAggs),
+          _groupResult(groupSize, NULL),
+          _aggStateResult(numAggs, NULL)
         {
             restart();
         }
@@ -394,11 +398,22 @@ public:
             }
             return &(_listIter->state[0]);
         }
+
+        vector<Value const*> const& getAggVector()
+        {
+            Value const* s = getCurrentState();
+            for(size_t i =0; i<_numAggs; ++i)
+            {
+                _aggStateResult[i] = &(s[i]);
+            }
+            return _aggStateResult;
+        }
+
     };
 
     const_iterator getIterator() const
     {
-        return const_iterator(_data, _hashes, _groupSize);
+        return const_iterator(_data, _hashes, _groupSize, _numAggs);
     }
 
     void logStuff()

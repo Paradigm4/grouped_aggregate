@@ -382,11 +382,11 @@ public:
         }
     }
 
-    inline void aggFinal(Value* results, std::vector<Value const*> const& inStates)
+    inline void aggFinal(Value* results, Value const* inStates)
     {
         for(size_t i=0; i<_numAggs; ++i)
         {
-            _aggregates[i]->finalResult( results[i], *(inStates[i]));
+            _aggregates[i]->finalResult( results[i], inStates[i]);
         }
     }
 };
