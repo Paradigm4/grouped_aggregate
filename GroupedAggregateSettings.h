@@ -34,7 +34,7 @@ private:
     size_t const _numInstances;
     bool   _inputSorted;
     bool   _inputSortedSet;
-    vector<AttributeID> _groupAttributeIds;
+    vector<int64_t> _groupAttributeIds;
     vector<string> _groupAttributeNames;
     vector<TypeId> _groupAttributeTypes;
     vector<AttributeComparator> _groupComparators;
@@ -107,18 +107,24 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
+        AttributeID scapeGoat = inputSchema.getAttributes().size() - 1; //TODO: better scapegoat picking logic here
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
             AttributeID& inAttId = _inputAttributeIds[i];
             if (inAttId == INVALID_ATTRIBUTE_ID)
             {
-                inAttId = _groupAttributeIds[0];
+                inAttId = scapeGoat;
             }
             _inputAttributeTypes.push_back(inputSchema.getAttributes()[inAttId].getType());
         }
     }
 
-    vector<AttributeID> const& getGroupAttributeIds() const
+    size_t getGroupSize() const
+    {
+        return _groupSize;
+    }
+
+    vector<int64_t> const& getGroupAttributeIds() const
     {
         return _groupAttributeIds;
     }
@@ -237,11 +243,6 @@ public:
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
         return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning());
-    }
-
-    size_t getGroupSize() const
-    {
-        return _groupSize;
     }
 
     /**
