@@ -34,9 +34,10 @@ private:
     size_t const _numInstances;
     bool   _inputSorted;
     bool   _inputSortedSet;
-    vector<int64_t> _groupAttributeIds;
-    vector<string> _groupAttributeNames;
-    vector<TypeId> _groupAttributeTypes;
+    vector<int64_t> _groupIds;
+    vector<bool>    _isGroupOnAttribute;
+    vector<string> _groupNames;
+    vector<TypeId> _groupTypes;
     vector<AttributeComparator> _groupComparators;
     vector<DoubleFloatOther> _groupDfo;
     vector<AggregatePtr> _aggregates;
@@ -62,7 +63,7 @@ public:
         _outputChunkSize        ( 1000000 ),
         _outputChunkSizeSet     ( false ),
         _numInstances           ( query -> getInstancesCount() ),
-        _inputSorted            ( false ),
+        _inputSorted            ( true ),
         _inputSortedSet         ( false )
     {
         for(size_t i = 0; i<operatorParameters.size(); ++i)
@@ -87,15 +88,34 @@ public:
             }
             else if(param->getParamType() == PARAM_ATTRIBUTE_REF)
             {
+                _inputSorted=false;
                 shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
                 AttributeID attId = ref->getObjectNo();
                 string groupName  = ref->getObjectName();
                 TypeId groupType  = inputSchema.getAttributes()[attId].getType();
-                _groupAttributeIds.push_back(attId);
-                _groupAttributeNames.push_back(groupName);
-                _groupAttributeTypes.push_back(groupType);
+                _groupIds.push_back(attId);
+                _groupNames.push_back(groupName);
+                _groupTypes.push_back(groupType);
                 _groupComparators.push_back(AttributeComparator(groupType));
                 _groupDfo.push_back(getDoubleFloatOther(groupType));
+                _isGroupOnAttribute.push_back(true);
+                ++_groupSize;
+            }
+            else if(param->getParamType() == PARAM_DIMENSION_REF)
+            {
+                shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
+                int64_t dimNo = ref->getObjectNo();
+                if(dimNo == static_cast<int64_t>(inputSchema.getDimensions().size() - 1))
+                {
+                    _inputSorted = false;
+                }
+                string dimName  = ref->getObjectName();
+                _groupIds.push_back(dimNo);
+                _groupNames.push_back(dimName);
+                _groupTypes.push_back(TID_INT64);
+                _groupComparators.push_back(AttributeComparator(TID_INT64));
+                _groupDfo.push_back(getDoubleFloatOther(TID_INT64));
+                _isGroupOnAttribute.push_back(false);
                 ++_groupSize;
             }
         }
@@ -124,19 +144,24 @@ public:
         return _groupSize;
     }
 
-    vector<int64_t> const& getGroupAttributeIds() const
+    vector<int64_t> const& getGroupIds() const
     {
-        return _groupAttributeIds;
+        return _groupIds;
     }
 
-    vector<string> const& getGroupAttributeNames() const
+    bool isGroupOnAttribute(size_t const groupNo) const
     {
-        return _groupAttributeNames;
+        return _isGroupOnAttribute[groupNo];
     }
 
-    vector<TypeId> const& getGroupAttributeTypes() const
+    vector<string> const& getGroupNames() const
     {
-        return _groupAttributeTypes;
+        return _groupNames;
+    }
+
+    vector<TypeId> const& getGroupTypes() const
+    {
+        return _groupTypes;
     }
 
     vector<TypeId> const& getInputAttributeTypes() const
@@ -216,7 +241,7 @@ public:
         }
         for (size_t j =0; j<_groupSize; ++j)
         {
-            outputAttributes.push_back( AttributeDesc(i++, _groupAttributeNames[j],  _groupAttributeTypes[j], 0, 0));
+            outputAttributes.push_back( AttributeDesc(i++, _groupNames[j],  _groupTypes[j], 0, 0));
         }
         for (size_t j =0; j<_numAggs; ++j)
         {

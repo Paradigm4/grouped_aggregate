@@ -44,7 +44,7 @@ public:
         }
         res.push_back(PARAM_AGGREGATE_CALL());
         res.push_back(PARAM_IN_ATTRIBUTE_NAME("void"));
-
+        res.push_back(PARAM_IN_DIMENSION_NAME());
         return res;
     }
 

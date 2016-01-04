@@ -395,13 +395,28 @@ public:
         size_t const groupSize = settings.getGroupSize();
         vector<shared_ptr<ConstArrayIterator> > gaiters(groupSize,NULL);
         vector<shared_ptr<ConstChunkIterator> > gciters(groupSize,NULL);
+        vector<int64_t> const& groupIds = settings.getGroupIds();
+        vector<Value> coords(groupSize);
+        vector<Value const*> group(groupSize, NULL);
         for(size_t g=0; g<groupSize; ++g)
         {
-            gaiters[g] = inputArray->getConstIterator( settings.getGroupAttributeIds()[g] );
+            if(!settings.isGroupOnAttribute(g))
+            {
+                group[g] = &(coords[g]);
+            }
+            else
+            {
+                gaiters[g] = inputArray->getConstIterator( settings.getGroupIds()[g] );
+            }
+        }
+        if(gaiters[0].get() == 0)
+        {   //TODO: also covers the case when the user wants to group by dimensions only
+            gaiters[0] = inputArray->getConstIterator(inputArray->getArrayDesc().getAttributes().size()-1);
         }
         size_t const numAggs = settings.getNumAggs();
         vector<shared_ptr<ConstArrayIterator> > iaiters(numAggs, NULL);
         vector<shared_ptr<ConstChunkIterator> > iciters(numAggs, NULL);
+        vector<Value const*> input(numAggs, NULL);
         for(size_t a=0; a<numAggs; ++a)
         {
             iaiters[a] = inputArray->getConstIterator( settings.getInputAttributeIds()[a] );
@@ -409,13 +424,14 @@ public:
         size_t const maxTableSize = 150*1024*1024;
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
-        vector<Value const*> group(groupSize, NULL);
-        vector<Value const*> input(numAggs, NULL);
         while(!gaiters[0]->end())
         {
             for(size_t g=0; g<groupSize; ++g)
             {
-                gciters[g] = gaiters[g]->getChunk().getConstIterator();
+                if(gaiters[g].get())
+                {
+                    gciters[g] = gaiters[g]->getChunk().getConstIterator();
+                }
             }
             for(size_t a=0; a<numAggs; ++a)
             {
@@ -423,15 +439,26 @@ public:
             }
             while(!gciters[0]->end())
             {
+                Coordinates const& position = gciters[0]->getPosition();
                 for(size_t g=0; g<groupSize; ++g)
                 {
-                    group[g] = &(gciters[g]->getItem());
+                    if(settings.isGroupOnAttribute(g))
+                    {
+                        group[g] = &(gciters[g]->getItem());
+                    }
+                    else
+                    {
+                        coords[g].setInt64( position[ groupIds[g] ] );
+                    }
                 }
                 if(!settings.groupValid(group))
                 {
                     for(size_t g=0; g<groupSize; ++g)
                     {
-                        ++(*(gciters[g]));
+                        if(gaiters[g].get())
+                        {
+                            ++(*(gciters[g]));
+                        }
                     }
                     for(size_t a=0; a<numAggs; ++a)
                     {
@@ -468,7 +495,10 @@ public:
                 }
                 for(size_t g=0; g<groupSize; ++g)
                 {
-                    ++(*(gciters[g]));
+                    if(gaiters[g].get())
+                    {
+                        ++(*(gciters[g]));
+                    }
                 }
                 for(size_t a=0; a<numAggs; ++a)
                 {
@@ -477,7 +507,10 @@ public:
             }
             for(size_t g=0; g<groupSize; ++g)
             {
-                ++(*(gaiters[g]));
+                if(gaiters[g].get())
+                {
+                    ++(*(gaiters[g]));
+                }
             }
             for(size_t a=0; a<numAggs; ++a)
             {
