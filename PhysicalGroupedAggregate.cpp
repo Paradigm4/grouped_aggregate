@@ -389,11 +389,9 @@ public:
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
-        AttributeID const aggregatedAttribute = settings.getInputAttributeIds()[0];
         ArenaPtr operatorArena = this->getArena();
         ArenaPtr hashArena(newArena(Options("").resetting(true).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(settings, hashArena);
-        AggregatePtr agg = settings.cloneAggregate();
         size_t const groupSize = settings.getGroupSize();
         vector<shared_ptr<ConstArrayIterator> > gaiters(groupSize,NULL);
         vector<shared_ptr<ConstChunkIterator> > gciters(groupSize,NULL);
@@ -401,24 +399,33 @@ public:
         {
             gaiters[g] = inputArray->getConstIterator( settings.getGroupAttributeIds()[g] );
         }
-        shared_ptr<ConstArrayIterator> iaiter(inputArray->getConstIterator(settings.getInputAttributeIds()[0]));
-        shared_ptr<ConstChunkIterator> iciter;
+        size_t const numAggs = settings.getNumAggs();
+        vector<shared_ptr<ConstArrayIterator> > iaiters(numAggs, NULL);
+        vector<shared_ptr<ConstChunkIterator> > iciters(numAggs, NULL);
+        for(size_t a=0; a<numAggs; ++a)
+        {
+            iaiters[a] = inputArray->getConstIterator( settings.getInputAttributeIds()[a] );
+        }
         size_t const maxTableSize = 150*1024*1024;
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
         vector<Value const*> group(groupSize, NULL);
+        vector<Value const*> input(numAggs, NULL);
         while(!gaiters[0]->end())
         {
             for(size_t g=0; g<groupSize; ++g)
             {
                 gciters[g] = gaiters[g]->getChunk().getConstIterator();
             }
-            iciter=iaiter->getChunk().getConstIterator();
+            for(size_t a=0; a<numAggs; ++a)
+            {
+                iciters[a] = iaiters[a]->getChunk().getConstIterator();
+            }
             while(!gciters[0]->end())
             {
                 for(size_t g=0; g<groupSize; ++g)
                 {
-                    group[g] = &gciters[g]->getItem();
+                    group[g] = &(gciters[g]->getItem());
                 }
                 if(!settings.groupValid(group))
                 {
@@ -426,15 +433,20 @@ public:
                     {
                         ++(*(gciters[g]));
                     }
-                    ++(*iciter);
+                    for(size_t a=0; a<numAggs; ++a)
+                    {
+                        ++(*(iciters[a]));
+                    }
                     continue;
                 }
                 uint64_t hash;
-                Value const& input = iciter->getItem();
-                vector<Value const*> inVec(1,&input);
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    input[a] = &(iciters[a]->getItem());
+                }
                 if(aht.usedBytes() < maxTableSize)
                 {
-                    aht.insert(group, inVec);
+                    aht.insert(group, input);
                 }
                 else
                 {
@@ -442,37 +454,46 @@ public:
                     {
                         if(settings.inputSorted())
                         {
-                            flatCondensed.writeValue(hash, group, inVec);
+                            flatCondensed.writeValue(hash, group, input);
                         }
                         else
                         {
-                            flatWriter.writeValue(hash, group, inVec);
+                            flatWriter.writeValue(hash, group, input);
                         }
                     }
                     else
                     {
-                        aht.insert(group, inVec);
+                        aht.insert(group, input);
                     }
                 }
                 for(size_t g=0; g<groupSize; ++g)
                 {
                     ++(*(gciters[g]));
                 }
-                ++(*iciter);
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    ++(*(iciters[a]));
+                }
             }
             for(size_t g=0; g<groupSize; ++g)
             {
                 ++(*(gaiters[g]));
             }
-            ++(*iaiter);
+            for(size_t a=0; a<numAggs; ++a)
+            {
+                ++(*(iaiters[a]));
+            }
         }
         for(size_t g = 0; g<groupSize; ++g)
         {
             gciters[g].reset();
             gaiters[g].reset();
         }
-        iciter.reset();
-        iaiter.reset();
+        for(size_t a=0; a<numAggs; ++a)
+        {
+            iciters[a].reset();
+            iaiters[a].reset();
+        }
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
         aht.sortKeys();
@@ -482,11 +503,13 @@ public:
         {
             gaiters[g] = arr->getConstIterator(g+1);
         }
-        iaiter = arr->getConstIterator(groupSize+1);
+        for(size_t a = 0; a<numAggs; ++a)
+        {
+            iaiters[a] = arr->getConstIterator(a + groupSize + 1);
+        }
         shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
         MergeWriter<Settings::MERGE> mergeWriter(settings, query);
-        vector<Value const*> input(1, NULL);
         while(!haiter->end())
         {
             hciter = haiter->getChunk().getConstIterator();
@@ -494,7 +517,10 @@ public:
             {
                 gciters[g] = gaiters[g]->getChunk().getConstIterator();
             }
-            iciter = iaiter->getChunk().getConstIterator();
+            for(size_t a = 0; a<numAggs; ++a)
+            {
+                iciters[a] = iaiters[a]->getChunk().getConstIterator();
+            }
             while(!hciter->end())
             {
                 Value const& hash  = hciter->getItem();
@@ -502,7 +528,10 @@ public:
                 {
                     group[g] = &(gciters[g]->getItem());
                 }
-                input[0] = &(iciter->getItem());
+                for(size_t a = 0; a<numAggs; ++a)
+                {
+                    input[a] = &(iciters[a]->getItem());
+                }
                 while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() ||
                                         (ahtIter.getCurrentHash() == hash.getUint64() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
                 {
@@ -522,14 +551,20 @@ public:
                 {
                     ++(*(gciters[g]));
                 }
-                ++(*iciter);
+                for(size_t a = 0; a<numAggs; ++a)
+                {
+                    ++(*(iciters[a]));
+                }
             }
             ++(*haiter);
             for(size_t g = 0; g<groupSize; ++g)
             {
                 ++(*(gaiters[g]));
             }
-            ++(*iaiter);
+            for(size_t a = 0; a<numAggs; ++a)
+            {
+                ++(*(iaiters[a]));
+            }
         }
         while(!ahtIter.end())
         {
@@ -543,8 +578,11 @@ public:
             gciters[g].reset();
             gaiters[g].reset();
         }
-        iciter.reset();
-        iaiter.reset();
+        for(size_t a = 0; a<numAggs; ++a)
+        {
+            iciters[a].reset();
+            iaiters[a].reset();
+        }
         return mergeWriter.finalize();
     }
 
@@ -553,13 +591,14 @@ public:
         inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
-        size_t const groupSize = settings.getGroupSize();
+        size_t const groupSize    = settings.getGroupSize();
+        size_t const numAggs      = settings.getNumAggs();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
         vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
         vector<shared_ptr<ConstArrayIterator> > gaiters(numInstances * groupSize);
         vector<shared_ptr<ConstChunkIterator> > gciters(numInstances * groupSize);
-        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances);
-        vector<shared_ptr<ConstChunkIterator> > vciters(numInstances);
+        vector<shared_ptr<ConstArrayIterator> > vaiters(numInstances * numAggs);
+        vector<shared_ptr<ConstChunkIterator> > vciters(numInstances * numAggs);
         vector<Coordinates > positions(numInstances);
         size_t numClosed = 0;
         for(size_t inst =0; inst<numInstances; ++inst)
@@ -578,8 +617,11 @@ public:
                     gaiters[inst * groupSize + g].reset();
                     gciters[inst * groupSize + g].reset();
                 }
-                vaiters[inst].reset();
-                vciters[inst].reset();
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    vaiters[inst * numAggs + a].reset();
+                    vciters[inst * numAggs + a].reset();
+                }
                 numClosed++;
             }
             else
@@ -591,14 +633,17 @@ public:
                     gaiters[inst * groupSize + g]->setPosition(positions[inst]);
                     gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
                 }
-                vaiters[inst] = inputArray->getConstIterator(1 + groupSize);
-                vaiters[inst]->setPosition(positions[inst]);
-                vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    vaiters[inst * numAggs + a] = inputArray->getConstIterator(1 + groupSize + a);
+                    vaiters[inst * numAggs + a]->setPosition(positions[inst]);
+                    vciters[inst * numAggs + a] = vaiters[inst * numAggs + a]->getChunk().getConstIterator();
+                }
             }
         }
         vector<Value const*> minGroup(groupSize, NULL);
         vector<Value const*> curGroup(groupSize, NULL);
-        vector<Value const*> curState(1, NULL);
+        vector<Value const*> curState(numAggs,   NULL);
         while(numClosed < numInstances)
         {
             bool minHashSet = false;
@@ -632,16 +677,22 @@ public:
                 {
                     curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
                 }
-                curState[0] = &(vciters[inst]->getItem());
                 if(hash == minHash && settings.groupEqual(curGroup, minGroup))
                 {
+                    for(size_t a=0; a<numAggs; ++a)
+                    {
+                        curState[a] = &(vciters[inst * numAggs + a]->getItem());
+                    }
                     output.writeState(hash, curGroup, curState);
                     ++(*hciters[inst]);
                     for(size_t g=0; g<groupSize; ++g)
                     {
                         ++(*gciters[inst * groupSize + g]);
                     }
-                    ++(*vciters[inst]);
+                    for(size_t a=0; a<numAggs; ++a)
+                    {
+                        ++(*vciters[inst * numAggs + a]);
+                    }
                     if(hciters[inst]->end())
                     {
                         positions[inst][2] = positions[inst][2] + settings.getMergeChunkSize();
@@ -655,8 +706,11 @@ public:
                                 gaiters[inst * groupSize + g].reset();
                                 gciters[inst * groupSize + g].reset();
                             }
-                            vaiters[inst].reset();
-                            vciters[inst].reset();
+                            for(size_t a=0; a<numAggs; ++a)
+                            {
+                                vaiters[inst * numAggs + a].reset();
+                                vciters[inst * numAggs + a].reset();
+                            }
                             numClosed++;
                         }
                         else
@@ -667,8 +721,11 @@ public:
                                 gaiters[inst * groupSize + g]->setPosition(positions[inst]);
                                 gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
                             }
-                            vaiters[inst]->setPosition(positions[inst]);
-                            vciters[inst] = vaiters[inst]->getChunk().getConstIterator();
+                            for(size_t a=0; a<numAggs; ++a)
+                            {
+                                vaiters[inst * numAggs + a]->setPosition(positions[inst]);
+                                vciters[inst * numAggs + a] = vaiters[inst * numAggs + a]->getChunk().getConstIterator();
+                            }
                         }
                     }
                 }
@@ -684,7 +741,6 @@ public:
         array = localCondense(array, query, settings);
         array = globalMerge(array, query, settings);
         return array;
-
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalGroupedAggregate, "grouped_aggregate", "physical_grouped_aggregate");

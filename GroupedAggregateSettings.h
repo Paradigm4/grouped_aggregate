@@ -70,10 +70,6 @@ public:
             shared_ptr<OperatorParam> param = operatorParameters[i];
             if (param->getParamType() == PARAM_AGGREGATE_CALL)
             {
-                if(_aggregates.size() > 0)
-                {
-                    throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate specified multiple times";
-                }
                 AttributeID inputAttId;
                 string outputAttName;
                 AggregatePtr agg = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &inputAttId, &outputAttName);
@@ -106,10 +102,6 @@ public:
         if(_numAggs == 0)
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate not specified";
-        }
-        if(_numAggs > 1)
-        {
-            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Multiple aggregates not yet supported";
         }
         if(_groupSize == 0)
         {
