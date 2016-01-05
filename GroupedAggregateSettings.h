@@ -95,7 +95,6 @@ public:
                 {
                     throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << agg->getName();
                 }
-                _inputAttributeTypes.push_back(inputSchema.getAttributes()[inputAttId].getType());
                 _inputAttributeIds.push_back(inputAttId);
                 _outputAttributeNames.push_back(outputAttName);
                 ++_numAggs;
@@ -154,7 +153,16 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
-        AttributeID scapeGoat = inputSchema.getAttributes().size() - 1; //TODO: better scapegoat picking logic here
+        AttributeID scapeGoat = 0; //TODO: better scapegoat picking logic here (i.e. pick the smallest attribute)
+        for(size_t i =0; i<_inputAttributeIds.size(); ++i)
+        {
+            AttributeID const& inAttId = _inputAttributeIds[i];
+            if(inAttId != INVALID_ATTRIBUTE_ID)
+            {
+                scapeGoat = inAttId;
+                break;
+            }
+        }
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
             AttributeID& inAttId = _inputAttributeIds[i];
