@@ -696,6 +696,7 @@ public:
                     minHashSet = true;
                 }
             }
+            vector<size_t> toAdvance;
             for(size_t inst=0; inst<numInstances; ++inst)
             {
                 if(hciters[inst] == 0)
@@ -709,53 +710,63 @@ public:
                 }
                 if(hash == minHash && settings.groupEqual(curGroup, minGroup))
                 {
-                    for(size_t a=0; a<numAggs; ++a)
+                    toAdvance.push_back(inst);
+                }
+            }
+            for(size_t i =0; i<toAdvance.size(); ++i)
+            {
+                size_t const inst = toAdvance[i];
+                uint64_t hash    = hciters[inst]->getItem().getUint64();
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
+                }
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    curState[a] = &(vciters[inst * numAggs + a]->getItem());
+                }
+                output.writeState(hash, curGroup, curState);
+                ++(*hciters[inst]);
+                for(size_t g=0; g<groupSize; ++g)
+                {
+                    ++(*gciters[inst * groupSize + g]);
+                }
+                for(size_t a=0; a<numAggs; ++a)
+                {
+                    ++(*vciters[inst * numAggs + a]);
+                }
+                if(hciters[inst]->end())
+                {
+                    positions[inst][2] = positions[inst][2] + settings.getMergeChunkSize();
+                    bool sp = haiters[inst]->setPosition(positions[inst]);
+                    if(!sp)
                     {
-                        curState[a] = &(vciters[inst * numAggs + a]->getItem());
-                    }
-                    output.writeState(hash, curGroup, curState);
-                    ++(*hciters[inst]);
-                    for(size_t g=0; g<groupSize; ++g)
-                    {
-                        ++(*gciters[inst * groupSize + g]);
-                    }
-                    for(size_t a=0; a<numAggs; ++a)
-                    {
-                        ++(*vciters[inst * numAggs + a]);
-                    }
-                    if(hciters[inst]->end())
-                    {
-                        positions[inst][2] = positions[inst][2] + settings.getMergeChunkSize();
-                        bool sp = haiters[inst]->setPosition(positions[inst]);
-                        if(!sp)
+                        haiters[inst].reset();
+                        hciters[inst].reset();
+                        for(size_t g=0; g<groupSize; ++g)
                         {
-                            haiters[inst].reset();
-                            hciters[inst].reset();
-                            for(size_t g=0; g<groupSize; ++g)
-                            {
-                                gaiters[inst * groupSize + g].reset();
-                                gciters[inst * groupSize + g].reset();
-                            }
-                            for(size_t a=0; a<numAggs; ++a)
-                            {
-                                vaiters[inst * numAggs + a].reset();
-                                vciters[inst * numAggs + a].reset();
-                            }
-                            numClosed++;
+                            gaiters[inst * groupSize + g].reset();
+                            gciters[inst * groupSize + g].reset();
                         }
-                        else
+                        for(size_t a=0; a<numAggs; ++a)
                         {
-                            hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                            for(size_t g=0; g<groupSize; ++g)
-                            {
-                                gaiters[inst * groupSize + g]->setPosition(positions[inst]);
-                                gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
-                            }
-                            for(size_t a=0; a<numAggs; ++a)
-                            {
-                                vaiters[inst * numAggs + a]->setPosition(positions[inst]);
-                                vciters[inst * numAggs + a] = vaiters[inst * numAggs + a]->getChunk().getConstIterator();
-                            }
+                            vaiters[inst * numAggs + a].reset();
+                            vciters[inst * numAggs + a].reset();
+                        }
+                        numClosed++;
+                    }
+                    else
+                    {
+                        hciters[inst] = haiters[inst]->getChunk().getConstIterator();
+                        for(size_t g=0; g<groupSize; ++g)
+                        {
+                            gaiters[inst * groupSize + g]->setPosition(positions[inst]);
+                            gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
+                        }
+                        for(size_t a=0; a<numAggs; ++a)
+                        {
+                            vaiters[inst * numAggs + a]->setPosition(positions[inst]);
+                            vciters[inst * numAggs + a] = vaiters[inst * numAggs + a]->getChunk().getConstIterator();
                         }
                     }
                 }
