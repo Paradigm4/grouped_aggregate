@@ -25,8 +25,6 @@ using std::shared_ptr;
 using std::dynamic_pointer_cast;
 using grouped_aggregate::Settings;
 
-static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.aht"));
-
 // MurmurHash2, 64-bit versions, by Austin Appleby
 // From https://sites.google.com/site/murmurhash/
 // MIT license
@@ -133,12 +131,15 @@ struct HashTableEntry
     }
 };
 
+//TODO: this may not work well when the number of distinct groups exceeds millions (but the memory settings still allow us to use the table)
+//needs either a tree instead of a flat list at each bucket, or a rehashing scheme
 class AggregateHashTable
 {
 private:
     ArenaPtr                                 _arena;
     size_t const                             _groupSize;
     size_t const                             _numAggs;
+    size_t const                             _numHashBuckets;
     mgd::vector< mgd::list<HashTableEntry> > _data;
     mgd::list<HashTableEntry>::iterator      _iter;
     Settings&                                _settings;
@@ -149,13 +150,12 @@ private:
     size_t                                   _numGroups;
 
 public:
-    static size_t const NUM_BUCKETS      = 1000037;
-
     AggregateHashTable(Settings& settings, ArenaPtr const& arena):
         _arena(arena),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
-        _data(_arena, NUM_BUCKETS, mgd::list<HashTableEntry>(_arena)),
+        _numHashBuckets(settings.getNumHashBuckets()),
+        _data(_arena, _numHashBuckets, mgd::list<HashTableEntry>(_arena)),
         _settings(settings),
         _hashes(_arena, 0),
         _lastGroup(NULL),
@@ -172,7 +172,7 @@ public:
             return;
         }
         uint64_t hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry>& list = _data[hash % NUM_BUCKETS];
+        mgd::list<HashTableEntry>& list = _data[hash % _numHashBuckets];
         _iter = list.begin();
         bool seenHash = false;
         while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _settings.groupLess(_iter->groupPtr(), group))))
@@ -238,7 +238,7 @@ public:
     bool contains(std::vector<Value const*> const& group, uint64_t& hash) const
     {
         hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry> const& list = _data[hash % NUM_BUCKETS];
+        mgd::list<HashTableEntry> const& list = _data[hash % _numHashBuckets];
         mgd::list<HashTableEntry>::const_iterator citer = list.begin();
         while(citer != list.end())
         {
@@ -285,6 +285,7 @@ public:
         mgd::vector<size_t> const& _hashes;
         size_t const _groupSize;
         size_t const _numAggs;
+        size_t const _numHashBuckets;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
         mgd::list<HashTableEntry>::const_iterator _listIter;
@@ -297,11 +298,12 @@ public:
          */
         const_iterator(mgd::vector <mgd::list<HashTableEntry> > const& data,
                        mgd::vector<size_t> const& hashes,
-                       size_t const groupSize, size_t const numAggs):
+                       size_t const groupSize, size_t const numAggs, size_t const numHashBuckets):
           _data(data),
           _hashes(hashes),
           _groupSize(groupSize),
           _numAggs(numAggs),
+          _numHashBuckets(numHashBuckets),
           _groupResult(groupSize, NULL),
           _aggStateResult(numAggs, NULL)
         {
@@ -317,7 +319,7 @@ public:
             if(_hashIter != _hashes.end())
             {
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                mgd::list<HashTableEntry> const& l = _data[_currHash % _numHashBuckets];
                 _listIter = l.begin();
                 while(_listIter->hash != _currHash)
                 {
@@ -352,7 +354,7 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& l = _data[_currHash % AggregateHashTable::NUM_BUCKETS];
+                mgd::list<HashTableEntry> const& l = _data[_currHash % _numHashBuckets];
                 _listIter = l.begin();
                 while(_listIter->hash != _currHash)
                 {
@@ -413,7 +415,7 @@ public:
 
     const_iterator getIterator() const
     {
-        return const_iterator(_data, _hashes, _groupSize, _numAggs);
+        return const_iterator(_data, _hashes, _groupSize, _numAggs, _numHashBuckets);
     }
 
     void logStuff()

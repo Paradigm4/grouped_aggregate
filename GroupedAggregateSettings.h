@@ -3,6 +3,8 @@
 
 #include <query/Operator.h>
 #include <query/AttributeComparator.h>
+#include <boost/algorithm/string.hpp>
+#include <boost/lexical_cast.hpp>
 
 namespace scidb
 {
@@ -13,7 +15,14 @@ using std::string;
 using std::vector;
 using std::shared_ptr;
 using std::dynamic_pointer_cast;
+using std::ostringstream;
+using boost::algorithm::trim;
+using boost::starts_with;
+using boost::lexical_cast;
+using boost::bad_lexical_cast;
 
+// Logger for operator. static to prevent visibility of variable outside of file
+static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.grouped_aggregate"));
 
 /*
  * Settings for the grouped_aggregate operator.
@@ -34,6 +43,8 @@ private:
     size_t const _numInstances;
     bool   _inputSorted;
     bool   _inputSortedSet;
+    size_t _numHashBuckets;
+    bool   _numHashBucketsSet;
     vector<int64_t> _groupIds;
     vector<bool>    _isGroupOnAttribute;
     vector<string> _groupNames;
@@ -54,18 +65,21 @@ public:
              shared_ptr<Query>& query):
         _groupSize              (0),
         _numAggs                (0),
-        _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER) * 1024 * 1024 ),
+        _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER)),
         _maxTableSizeSet        ( false ),
-        _spilloverChunkSize     ( 1000000 ),
+        _spilloverChunkSize     ( 100000 ),
         _spilloverChunkSizeSet  ( false ),
-        _mergeChunkSize         ( 1000000 ),
+        _mergeChunkSize         ( 100000 ),
         _mergeChunkSizeSet      ( false ),
-        _outputChunkSize        ( 1000000 ),
+        _outputChunkSize        ( 100000 ),
         _outputChunkSizeSet     ( false ),
         _numInstances           ( query -> getInstancesCount() ),
-        _inputSorted            ( true ),
-        _inputSortedSet         ( false )
+        _inputSorted            ( false ),
+        _inputSortedSet         ( false ),
+        _numHashBuckets         ( 1000037 ),
+        _numHashBucketsSet      ( false )
     {
+        bool autoInputSorted = true;
         for(size_t i = 0; i<operatorParameters.size(); ++i)
         {
             shared_ptr<OperatorParam> param = operatorParameters[i];
@@ -88,7 +102,7 @@ public:
             }
             else if(param->getParamType() == PARAM_ATTRIBUTE_REF)
             {
-                _inputSorted=false;
+                autoInputSorted=false;
                 shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
                 AttributeID attId = ref->getObjectNo();
                 string groupName  = ref->getObjectName();
@@ -105,9 +119,9 @@ public:
             {
                 shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
                 int64_t dimNo = ref->getObjectNo();
-                if(dimNo == static_cast<int64_t>(inputSchema.getDimensions().size() - 1))
+                if(static_cast<size_t>(dimNo) == inputSchema.getDimensions().size() - 1)
                 {
-                    _inputSorted = false;
+                    autoInputSorted = false;
                 }
                 string dimName  = ref->getObjectName();
                 _groupIds.push_back(dimNo);
@@ -117,6 +131,19 @@ public:
                 _groupDfo.push_back(getDoubleFloatOther(TID_INT64));
                 _isGroupOnAttribute.push_back(false);
                 ++_groupSize;
+            }
+            else
+            {
+                string parameterString;
+                if (logical)
+                {
+                    parameterString = evaluate(((shared_ptr<OperatorParamLogicalExpression>&) param)->getExpression(),query, TID_STRING).getString();
+                }
+                else
+                {
+                    parameterString = ((shared_ptr<OperatorParamPhysicalExpression>&) param)->getExpression()->evaluate().getString();
+                }
+                parseStringParam(parameterString);
             }
         }
         if(_numAggs == 0)
@@ -137,8 +164,98 @@ public:
             }
             _inputAttributeTypes.push_back(inputSchema.getAttributes()[inAttId].getType());
         }
+        if(!_inputSortedSet)
+        {
+            _inputSorted = autoInputSorted;
+        }
+        LOG4CXX_DEBUG(logger, "GAG maxTableSize "<<_maxTableSize<<
+                              " spillChunkSize " <<_spilloverChunkSize<<
+                              " mergeChunkSize " <<_mergeChunkSize<<
+                              " outputChunkSize "<<_outputChunkSize<<
+                              " sorted "<<_inputSorted<<
+                              " numHashBuckets "<<_numHashBuckets);
     }
 
+private:
+    bool checkSizeTParam(string const& param, string const& header, size_t& target, bool& setFlag)
+    {
+        string headerWithEq = header + "=";
+        if(starts_with(param, headerWithEq))
+        {
+            if(setFlag)
+            {
+                ostringstream error;
+                error<<"illegal attempt to set "<<header<<" multiple times";
+                throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+            }
+            string paramContent = param.substr(headerWithEq.size());
+            trim(paramContent);
+            try
+            {
+                int64_t val = lexical_cast<int64_t>(paramContent);
+                if(val<=0)
+                {
+                    ostringstream error;
+                    error<<header<<" must be positive";
+                    throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+                }
+                target = val;
+                setFlag = true;
+                return true;
+            }
+            catch (bad_lexical_cast const& exn)
+            {
+                ostringstream error;
+                error<<"could not parse "<<error.str().c_str();
+                throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+            }
+        }
+        return false;
+    }
+
+    bool checkBoolParam(string const& param, string const& header, bool& target, bool& setFlag)
+    {
+        string headerWithEq = header + "=";
+        if(starts_with(param, headerWithEq))
+        {
+            if(setFlag)
+            {
+                ostringstream error;
+                error<<"illegal attempt to set "<<header<<" multiple times";
+                throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+            }
+            string paramContent = param.substr(headerWithEq.size());
+            trim(paramContent);
+            try
+            {
+                target= lexical_cast<bool>(paramContent);
+                setFlag = true;
+                return true;
+            }
+            catch (bad_lexical_cast const& exn)
+            {
+                ostringstream error;
+                error<<"could not parse "<<error.str().c_str();
+                throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+            }
+        }
+        return false;
+    }
+
+    void parseStringParam(string const& param)
+    {
+        if(checkSizeTParam(param,   "max_table_size",      _maxTableSize,         _maxTableSizeSet      ) ) { return; }
+        if(checkSizeTParam(param,   "spill_chunk_size",    _spilloverChunkSize,   _spilloverChunkSizeSet) ) { return; }
+        if(checkSizeTParam(param,   "merge_chunk_size",    _mergeChunkSize,       _mergeChunkSizeSet    ) ) { return; }
+        if(checkSizeTParam(param,   "output_chunk_size",   _outputChunkSize,      _outputChunkSizeSet   ) ) { return; }
+        if(checkSizeTParam(param,   "num_hash_buckets",    _numHashBuckets,       _numHashBucketsSet    ) ) { return; }
+        if(checkBoolParam (param,   "input_sorted",        _inputSorted,          _inputSortedSet       ) ) { return; }
+        ostringstream error;
+        error<<"unrecognized parameter "<<param;
+        throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
+    }
+
+public:
     size_t getGroupSize() const
     {
         return _groupSize;
@@ -196,7 +313,7 @@ public:
 
     size_t getMaxTableSize() const
     {
-        return _maxTableSize;
+        return _maxTableSize * 1024 * 1024;
     }
 
     size_t getSpilloverChunkSize() const
@@ -217,6 +334,11 @@ public:
     bool inputSorted() const
     {
         return _inputSorted;
+    }
+
+    size_t getNumHashBuckets() const
+    {
+        return _numHashBuckets;
     }
 
     size_t getNumAggs() const

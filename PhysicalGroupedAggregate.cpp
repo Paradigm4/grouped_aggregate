@@ -37,9 +37,6 @@
 #include "AggregateHashTable.h"
 #include "GroupedAggregateSettings.h"
 
-// Logger for operator. static to prevent visibility of variable outside of file
-static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("agg"));
-
 using namespace boost;
 using namespace std;
 
@@ -421,7 +418,7 @@ public:
         {
             iaiters[a] = inputArray->getConstIterator( settings.getInputAttributeIds()[a] );
         }
-        size_t const maxTableSize = 150*1024*1024;
+        size_t const maxTableSize = settings.getMaxTableSize();
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
         while(!gaiters[0]->end())
@@ -769,7 +766,7 @@ public:
 
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
-        Settings settings(inputArrays[0]->getArrayDesc(), _parameters, true, query);
+        Settings settings(inputArrays[0]->getArrayDesc(), _parameters, false, query);
         shared_ptr<Array> array = inputArrays[0];
         array = localCondense(array, query, settings);
         array = globalMerge(array, query, settings);
