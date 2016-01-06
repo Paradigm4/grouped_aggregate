@@ -1,5 +1,4 @@
 # grouped_aggregate
-==========
 
 A prototype operator for aggregation grouped by attributes, dimensions or combinations thereof. 
 
