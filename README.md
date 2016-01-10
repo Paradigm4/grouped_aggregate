@@ -62,4 +62,8 @@ Optional tuning settings:
   output_chunk_size=C                   :: the chunk size of the final output array. Defaults to 100,000. TBD: automate.
   
 Returned array contains one attribute for each group, and one attribute for each aggregated value. The dimensions are superfluous.
+
+When grouping by attributes, an attribute value of null (or any missing code) constitutes an invalid group that is not included in
+the output. All inputs associated with such groups are ignored. When grouping by multiple attributes, a null or missing value in 
+any one of the attributes makes the entire group invalid.
 ```
