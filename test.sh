@@ -123,4 +123,6 @@ iquery -aq "aggregate(
   sum(z)
  )" >> test.out
 
+iquery -aq "aggregate(grouped_aggregate(foo, count(*), count(b), i), sum(count), sum(b_count))" >> test.out
+
 diff test.out test.expected

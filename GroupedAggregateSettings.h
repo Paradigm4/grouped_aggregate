@@ -168,14 +168,19 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
-        AttributeID scapeGoat = 0; //TODO: better scapegoat picking logic here (i.e. pick the smallest attribute)
+        ssize_t scapeGoat = 0;
+        ssize_t scapeGoatSize = 0;
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
             AttributeID const& inAttId = _inputAttributeIds[i];
             if(inAttId != INVALID_ATTRIBUTE_ID)
             {
-                scapeGoat = inAttId;
-                break;
+                ssize_t attSize = inputSchema.getAttributes()[inAttId].getSize();
+                if(attSize > 0 && (scapeGoatSize == 0 || attSize < scapeGoatSize))
+                {
+                    scapeGoat = inAttId;
+                    scapeGoatSize = attSize;
+                }
             }
         }
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
