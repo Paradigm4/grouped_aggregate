@@ -72,7 +72,7 @@ store(
  ac_old
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, a, b, max(val)), ab_new)"
+time iquery -naq "store(grouped_aggregate(foo, a, b, max(val), var(val)), ab_new)"
 time iquery -naq "
 store(
  redimension(
@@ -82,11 +82,12 @@ store(
    A.b, 
    bidx
   ),
-  <a:string null, b:string null, val_max: double null> [aidx=0:*,2,0, bidx=0:*,1000000,0],
-  max(a) as a, max(b) as b, max(val)
+  <a:string null, b:string null, val_max: double null, val_var:double null> [aidx=0:*,2,0, bidx=0:*,1000000,0],
+  max(a) as a, max(b) as b, max(val), var(val)
  ),
  ab_old
 )"
+
 
 iquery -aq "op_count(a_new)" > test.out
 iquery -aq "op_count(a_old)" >> test.out
@@ -106,6 +107,20 @@ iquery -aq "aggregate(apply(join(sort(ac_new,a,c), sort(ac_old,a,c)), z, iif(ac_
 
 iquery -aq "op_count(ab_new)" >> test.out
 iquery -aq "op_count(ab_old)" >> test.out
-iquery -aq "aggregate(apply(join(sort(ab_new,a,b), sort(ab_old,a,b)), z, iif(ab_new.val_max=ab_old.val_max or (ab_new.val_max is null and ab_old.val_max is null), 1,0)), sum(z))" >> test.out
+iquery -aq "aggregate(
+ apply(
+  join(
+   sort(ab_new,a,b), 
+   sort(ab_old,a,b)
+  ), 
+  z, 
+  iif(
+   (ab_new.val_max=ab_old.val_max or (ab_new.val_max is null and ab_old.val_max is null)) and 
+   (ab_new.val_var=ab_old.val_var or (ab_new.val_var is null and ab_old.val_var is null)), 
+   1,
+   0)
+  ), 
+  sum(z)
+ )" >> test.out
 
 diff test.out test.expected
