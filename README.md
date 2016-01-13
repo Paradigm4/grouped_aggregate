@@ -38,32 +38,42 @@ $ iquery -aq "grouped_aggregate(test, avg(a), count(*), b, x, 'output_chunk_size
 
 ## More formally
 ```
-grouped_aggregate(input, aggregate_1(input_1) [as alias_1], group_1, [, aggregate_2(input_2),...][, group_2,...][, 'setting=val'])
+grouped_aggregate(input_array, aggregate_1(input_1) [as alias_1], group_1, 
+                  [, aggregate_2(input_2),...]
+                  [, group_2,...]
+                  [, 'setting=value'])
 Where
-  input                  :: any SciDB array
+  input_array            :: any SciDB array
   aggregate_1...N        :: any SciDB-registered aggregate
   input_1..N             :: any attribute in input
   group_1..M             :: any attribute or dimension in input
 The operator must be invoked with at least one aggregate and at least one group.
 
 Optional tuning settings:
-  input_sorted=<true/false>             :: a hint that the input array is sorted by groups, or that - in general - aggregate groups are
-                                        :: likely to occur next to each other. Defaults to true if aggregating by non-last dimension,
-                                        :: false otherwise.
-  max_table_size=MB                     :: the amount of memory (in MB) that the operator's hash table structure may consume
-                                        :: once the table exceeds this size, new aggregate groups are placed into a spillover array
-                                        :: defaults to the merge-sort-buffer config
-  num_hash_buckets=N                    :: the number of hash buckets to allocate in the hash table. Larger values improve performance
-                                        :: but also use more memory. Should be a prime. Default: 1,000,037.
-  spill_chunk_size=C                    :: the chunk size of the spill-over array. Defaults to 100,000. Should be smaller if there are
-                                        :: are a lot of attributes or aggregates. TBD: automate
-  merge_chunk_size=C                    :: the chunk size of the array used to transfer data between instances. Defaults to 100,000.
-                                        :: Should be smaller if ther are a lot of attributes/aggregates and instances. TBD: automate.
-  output_chunk_size=C                   :: the chunk size of the final output array. Defaults to 100,000. TBD: automate.
+  input_sorted=<true/false>     :: a hint that the input array is sorted by groups, or that, generally, 
+                                   aggregate group values are likely repeated often. Defaults to true 
+                                   if aggregating by non-last dimension, false otherwise.
+  max_table_size=MB             :: the amount of memory (in MB) that the operator's hash table structure
+                                   may consume. Once the table exceeds this size, new aggregate groups 
+                                   are placed into a spillover array defaults to the merge-sort-buffer 
+                                   configuration setting.
+  num_hash_buckets=N            :: the number of hash buckets to allocate in the hash table. Larger 
+                                   values improve speed but also use more memory. Should be a prime. 
+                                   Default: 1,000,037.
+  spill_chunk_size=C            :: the chunk size of the spill-over array. Defaults to 100,000. Should
+                                   be smaller if there are are many of group-by attributes or aggregates. 
+                                   TBD: automate
+  merge_chunk_size=C            :: the chunk size of the array used to transfer data between instances. 
+                                   Defaults to 100,000. Should be smaller if there are many group-by 
+                                   attributes or instances. TBD: automate.
+  output_chunk_size=C           :: the chunk size of the final output array. Defaults to 100,000. 
+                                   TBD: automate.
   
-Returned array contains one attribute for each group, and one attribute for each aggregated value. The dimensions are superfluous.
+Returned array contains one attribute for each group, and one attribute for each aggregated value. 
+The dimensions are superfluous.
 
-When grouping by attributes, an attribute value of null (or any missing code) constitutes an invalid group that is not included in
-the output. All inputs associated with such groups are ignored. When grouping by multiple attributes, a null or missing value in 
-any one of the attributes makes the entire group invalid.
+When grouping by attributes, an attribute value of null (or any missing code) constitutes an invalid 
+group that is not included in the output. All inputs associated with invalid groups are ignored. 
+When grouping by multiple attributes, a null or missing value in any one of the attributes makes the
+entire group invalid.
 ```
