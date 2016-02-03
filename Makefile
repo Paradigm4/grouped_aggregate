@@ -65,4 +65,4 @@ libgrouped_aggregate.so: $(SRCS) AggregateHashTable.h GroupedAggregateSettings.h
 	@echo "Now copy libgrouped_aggregate.so to $(INSTALL_DIR) on all your SciDB nodes, and restart SciDB."
 
 test:
-	echo write me XXX
+	./test.sh
