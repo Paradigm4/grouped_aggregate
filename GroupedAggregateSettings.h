@@ -417,7 +417,8 @@ public:
                                                  type == SPILL ? _spilloverChunkSize :
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
-        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning());
+
+        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning(), ArrayResPtr());
     }
 
     /**
