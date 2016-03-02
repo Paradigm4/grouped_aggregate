@@ -381,7 +381,7 @@ public:
         FINAL
     };
 
-    ArrayDesc makeSchema(SchemaType const type, string const name = "") const
+    ArrayDesc makeSchema(shared_ptr< Query> query, SchemaType const type, string const name = "") const
     {
         Attributes outputAttributes;
         size_t i =0;
@@ -418,7 +418,7 @@ public:
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
 
-        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning(), ArrayResPtr());
+        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning(), query->getDefaultArrayResidency());
     }
 
     /**

@@ -53,7 +53,7 @@ public:
     {
         size_t const numInstances = query->getInstancesCount();
         grouped_aggregate::Settings settings(schemas[0], _parameters, true, query);
-        return settings.makeSchema(Settings::FINAL, schemas[0].getName());
+        return settings.makeSchema(query, Settings::FINAL, schemas[0].getName());
     }
 };
 

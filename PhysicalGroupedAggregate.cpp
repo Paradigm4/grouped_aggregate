@@ -76,7 +76,7 @@ private:
 
 public:
     MergeWriter(Settings& settings, shared_ptr<Query> const& query, string const name = ""):
-        _output(make_shared<MemArray>(settings.makeSchema(SCHEMA_TYPE, name), query)),
+        _output(make_shared<MemArray>(settings.makeSchema(query,SCHEMA_TYPE, name), query)),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
         _chunkSize(_output->getArrayDesc().getDimensions()[_output->getArrayDesc().getDimensions().size()-1].getChunkInterval()),
@@ -368,7 +368,7 @@ public:
                std::vector<RedistributeContext> const& inputDistributions,
                std::vector< ArrayDesc> const& inputSchemas) const
     {
-        return RedistributeContext(createDistribution(psUndefined), inputSchemas[0].getResidency() );
+        return RedistributeContext(createDistribution(psUndefined), _schema.getResidency() );
     }
 
     shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
