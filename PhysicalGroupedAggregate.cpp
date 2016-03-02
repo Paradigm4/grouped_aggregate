@@ -364,9 +364,11 @@ public:
         return true;
     }
 
-    virtual RedistributeContext getOutputDistribution(std::vector<RedistributeContext> const&, std::vector<ArrayDesc> const&) const
+    virtual RedistributeContext getOutputDistribution(
+               std::vector<RedistributeContext> const& inputDistributions,
+               std::vector< ArrayDesc> const& inputSchemas) const
     {
-        return RedistributeContext(psUndefined);
+        return RedistributeContext(createDistribution(psUndefined), inputSchemas[0].getResidency() );
     }
 
     shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
@@ -618,7 +620,10 @@ public:
 
     shared_ptr<Array> globalMerge(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
-        inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
+
+    	//inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
+    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, true);
+
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
         size_t const groupSize    = settings.getGroupSize();
