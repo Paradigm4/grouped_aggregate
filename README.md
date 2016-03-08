@@ -77,3 +77,11 @@ group that is not included in the output. All inputs associated with invalid gro
 When grouping by multiple attributes, a null or missing value in any one of the attributes makes the
 entire group invalid.
 ```
+
+## Installation
+
+Easiest with https://github.com/paradigm4/dev_tools:
+```
+iquery -aq "install_github('paradigm4/grouped_aggregate')"
+iquery -aq "load_library('grouped_aggregate')"
+```
