@@ -80,7 +80,8 @@ entire group invalid.
 
 ## Installation
 
-Easiest with https://github.com/paradigm4/dev_tools:
+Easiest https://github.com/paradigm4/dev_tools
+Follow the instructions there to set up dev_tools first. Then do:
 ```
 iquery -aq "install_github('paradigm4/grouped_aggregate')"
 iquery -aq "load_library('grouped_aggregate')"
