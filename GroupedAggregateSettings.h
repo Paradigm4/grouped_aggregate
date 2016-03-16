@@ -18,7 +18,7 @@
 * the AFFERO GNU General Public License for the complete license terms.
 *
 * You should have received a copy of the AFFERO GNU General Public License
-* along with accelerated_io_tools.  If not, see <http://www.gnu.org/licenses/agpl-3.0.html>
+* along with grouped_aggregate.  If not, see <http://www.gnu.org/licenses/agpl-3.0.html>
 *
 * END_COPYRIGHT
 */
