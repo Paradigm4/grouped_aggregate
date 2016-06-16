@@ -193,7 +193,24 @@ public:
     {
         if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
+            ssize_t initialStateSize = 0;
+            for(size_t a=0; a<_numAggs; ++a)
+            {
+                if(_lastState[a].isLarge())
+                {
+                    initialStateSize += _lastState[a].size();
+                }
+            }
             _settings.aggAccumulate(_lastState, input);
+            ssize_t finalStateSize = 0;
+            for(size_t a=0; a<_numAggs; ++a)
+            {
+                if(_lastState[a].isLarge())
+                {
+                    finalStateSize += _lastState[a].size();
+                }
+            }
+            _largeValueMemory += (finalStateSize - initialStateSize);
             return;
         }
         uint64_t hash = hashGroup(group, _groupSize);
