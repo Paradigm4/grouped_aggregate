@@ -91,28 +91,35 @@ uint64_t mh64a ( const void * key, int len, uint32_t const seed = 0x5C1DB123 )
     return h;
 }
 
-uint64_t hashValue( Value const& val)
-{
-    if (val.isNull() || val.size() == 0)
-    {
-        throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "hashValue call";
-    }
-    return mh64a(val.data(), val.size());
-}
-
 uint64_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
 {
-    if(groupSize == 1)
-    {
-        Value const* v = group[0];
-        return hashValue(*v);
-    }
     size_t totalSize = 0;
     for(size_t i =0; i<groupSize; ++i)
     {
         totalSize += group[i]->size();
     }
-    std::vector<char> buf (totalSize);  //TODO: get rid of this allocation
+    if(totalSize <= 8)
+    {
+        uint64_t hash = 0;
+        char* hb = (char*) &hash;
+        for(size_t i =0; i<groupSize; ++i)
+        {
+            Value const* v = group[i];
+            char* vd =  (char*) v->data();
+            for(size_t j=0; j<v->size(); ++j)
+            {
+                *hb = *vd;
+                ++hb;
+                ++vd;
+            }
+        }
+        return hash;
+    }
+    static std::vector<char> buf (64);
+    if(buf.size() < totalSize)
+    {
+        buf.resize(totalSize);
+    }
     char* ch = &buf[0];
     for(size_t i =0; i<groupSize; ++i)
     {
@@ -133,58 +140,93 @@ static void EXCEPTION_ASSERT(bool cond)
 struct HashTableEntry
 {
     uint64_t hash;
-    mgd::vector<Value> group;
-    mgd::vector<Value> state;
+    size_t   idx;
 
-    HashTableEntry(ArenaPtr& arena, size_t const groupSize, size_t const numAggs, uint64_t const h, std::vector<Value const*> g):
-      hash(h), group(arena, groupSize), state(arena, numAggs)
-    {
-        for(size_t i=0; i<groupSize; ++i)
-        {
-            group[i] = *(g[i]);
-        }
-    }
-
-    Value const* groupPtr() const
-    {
-        return &(group[0]);
-    }
-
-    Value *     statePtr()
-    {
-        return &(state[0]);
-    }
+    HashTableEntry(uint64_t const hash, size_t const idx):
+        hash(hash), idx(idx)
+    {}
 };
 
-//TODO: this may not work well when the number of distinct groups exceeds millions (but the memory settings still allow us to use the table)
-//needs either a tree instead of a flat list at each bucket, or a rehashing scheme
 class AggregateHashTable
 {
 private:
+    Settings&                                _settings;
     ArenaPtr                                 _arena;
     size_t const                             _groupSize;
     size_t const                             _numAggs;
     size_t const                             _numHashBuckets;
-    mgd::vector< mgd::list<HashTableEntry> > _data;
-    mgd::list<HashTableEntry>::iterator      _iter;
-    Settings&                                _settings;
     mgd::vector<uint64_t>                    _hashes;
+    mgd::vector< mgd::list<HashTableEntry> > _buckets;
+    mgd::vector< Value >                     _values;
+    mgd::list<HashTableEntry>::iterator      _iter;
     Value const*                             _lastGroup;
     Value *                                  _lastState;
     ssize_t                                  _largeValueMemory;
     size_t                                   _numGroups;
 
+    void accumulateStates(Value* states, std::vector<Value const*> const& input)
+    {
+       size_t initialMem = 0;
+       for(size_t i =0; i<_numAggs; ++i)
+       {
+           if(states[i].isLarge())
+           {
+               initialMem += states[i].size();
+           }
+       }
+       _settings.aggAccumulate(states, input);
+       size_t finalMem = 0;
+       for(size_t i =0; i<_numAggs; ++i)
+       {
+          if(states[i].isLarge())
+          {
+              finalMem += states[i].size();
+          }
+       }
+       _largeValueMemory += (finalMem - initialMem);
+    }
+
+    size_t addNewGroup(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
+    {
+        size_t idx = _values.size();
+        for(size_t i=0; i<_groupSize; ++i)
+        {
+            Value const& groupItem = *(group[i]);
+            if(groupItem.isLarge())
+            {
+                _largeValueMemory += groupItem.size();
+            }
+            _values.push_back(groupItem);
+        }
+        _values.resize( _values.size() + _numAggs );
+        Value* statePtr = &(_values[idx + _groupSize]);
+        _settings.aggInitState(statePtr);
+        accumulateStates(statePtr, input);
+        return idx;
+    }
+
+    Value const* getGroup(size_t const idx) const
+    {
+        return &(_values[idx]);
+    }
+
+    Value* getStates(size_t const idx)
+    {
+        return &(_values[idx + _groupSize]);
+    }
+
 public:
     AggregateHashTable(Settings& settings, ArenaPtr const& arena):
+        _settings(settings),
         _arena(arena),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
         _numHashBuckets(settings.getNumHashBuckets()),
-        _data(_arena, _numHashBuckets, mgd::list<HashTableEntry>(_arena)),
-        _settings(settings),
         _hashes(_arena, 0),
+        _buckets(_arena, _numHashBuckets, mgd::list<HashTableEntry>(_arena)),
+        _values(_arena, 0),
         _lastGroup(NULL),
-        _lastState(0),
+        _lastState(NULL),
         _largeValueMemory(0),
         _numGroups(0)
     {}
@@ -193,84 +235,54 @@ public:
     {
         if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
-            ssize_t initialStateSize = 0;
-            for(size_t a=0; a<_numAggs; ++a)
-            {
-                if(_lastState[a].isLarge())
-                {
-                    initialStateSize += _lastState[a].size();
-                }
-            }
-            _settings.aggAccumulate(_lastState, input);
-            ssize_t finalStateSize = 0;
-            for(size_t a=0; a<_numAggs; ++a)
-            {
-                if(_lastState[a].isLarge())
-                {
-                    finalStateSize += _lastState[a].size();
-                }
-            }
-            _largeValueMemory += (finalStateSize - initialStateSize);
+            accumulateStates(_lastState, input);
             return;
         }
         uint64_t hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry>& list = _data[hash % _numHashBuckets];
-        _iter = list.begin();
-        bool seenHash = false;
-        while(_iter != list.end() &&  (_iter->hash < hash || (_iter->hash == hash && _settings.groupLess(_iter->groupPtr(), group))))
+        mgd::list<HashTableEntry>& bucket = _buckets[hash % _numHashBuckets];
+        _iter = bucket.begin();
+        while( _iter != bucket.end() && _iter->hash < hash)
         {
-            if(_iter->hash == hash)
+            ++_iter;
+        }
+        Value const* storedGrp = NULL;
+        Value* storedStates = NULL;
+        bool hashExists  = false;
+        bool equal       = false;
+        while (_iter != bucket.end() && _iter->hash == hash)
+        {
+            hashExists = true;
+            storedGrp = getGroup( _iter->idx);
+            storedStates = getStates( _iter->idx);
+            if(_settings.groupEqual(storedGrp, group))
             {
-                seenHash = true;
+                equal = true;
+                break;
+            }
+            else if( ! _settings.groupLess(storedGrp, group))
+            {
+                break;
             }
             ++_iter;
         }
-        if(_iter != list.end() && _iter->hash == hash) //in case the first element in the table matches and is bigger group
+        if( hashExists && equal )
         {
-            seenHash = true;
-        }
-        ssize_t initialStateSize = 0;
-        if(_iter != list.end() && _iter->hash == hash && _settings.groupEqual(_iter->groupPtr(), group))
-        {
-            Value *st = _iter->statePtr();
-            for(size_t a=0; a<_numAggs; ++a)
-            {
-                if(st[a].isLarge())
-                {
-                    initialStateSize += st[a].size();
-                }
-            }
+            accumulateStates(storedStates, input);
+            _lastGroup = getGroup(_iter->idx);
+            _lastState = getStates(_iter->idx);
         }
         else
         {
-            if(!seenHash)
+            if(!hashExists)
             {
                 _hashes.push_back(hash);
             }
-            _iter = list.emplace(_iter, _arena, _groupSize, _numAggs, hash, group);
-            for(size_t i =0; i<_groupSize; ++i)
-            {
-                if(group[i]->isLarge())
-                {
-                    _largeValueMemory += group[i]->size();
-                }
-            }
+            size_t idx = addNewGroup(group, input);
+            bucket.emplace(_iter, hash, idx);
             ++_numGroups;
-            _settings.aggInitState(_iter->statePtr());
+            _lastGroup = getGroup(idx);
+            _lastState = getStates(idx);
         }
-        _settings.aggAccumulate(_iter->statePtr(), input);
-        ssize_t finalStateSize   = 0;
-        Value *st = _iter->statePtr();
-        for(size_t a=0; a<_numAggs; ++a)
-        {
-            if(st[a].isLarge())
-            {
-                finalStateSize += st[a].size();
-            }
-        }
-        _largeValueMemory += (finalStateSize - initialStateSize);
-        _lastGroup = _iter->groupPtr();
-        _lastState = &(_iter->state[0]);
     }
 
     /**
@@ -280,11 +292,11 @@ public:
     bool contains(std::vector<Value const*> const& group, uint64_t& hash) const
     {
         hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry> const& list = _data[hash % _numHashBuckets];
-        mgd::list<HashTableEntry>::const_iterator citer = list.begin();
-        while(citer != list.end())
+        mgd::list<HashTableEntry> const& bucket = _buckets[hash % _numHashBuckets];
+        mgd::list<HashTableEntry>::const_iterator citer = bucket.begin();
+        while(citer != bucket.end())
         {
-            if(citer->hash == hash && _settings.groupEqual(citer->groupPtr(), group))
+            if(citer->hash == hash && _settings.groupEqual(getGroup(citer->idx), group))
             {
                 return true;
             }
@@ -323,14 +335,15 @@ public:
     class const_iterator
     {
     private:
-        mgd::vector <mgd::list<HashTableEntry> > const& _data;
+        mgd::vector <Value> const& _values;
+        mgd::vector <mgd::list<HashTableEntry> > const& _buckets;
         mgd::vector<size_t> const& _hashes;
         size_t const _groupSize;
         size_t const _numAggs;
         size_t const _numHashBuckets;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
-        mgd::list<HashTableEntry>::const_iterator _listIter;
+        mgd::list<HashTableEntry>::const_iterator _bucketIter;
         vector<Value const*> _groupResult;
         vector<Value const*> _aggStateResult;
 
@@ -338,10 +351,12 @@ public:
         /**
          * To get one, call AggregateHashTable::getIterator
          */
-        const_iterator(mgd::vector <mgd::list<HashTableEntry> > const& data,
+        const_iterator(mgd::vector<Value> const& values,
+                       mgd::vector <mgd::list<HashTableEntry> > const& buckets,
                        mgd::vector<size_t> const& hashes,
                        size_t const groupSize, size_t const numAggs, size_t const numHashBuckets):
-          _data(data),
+          _values(values),
+          _buckets(buckets),
           _hashes(hashes),
           _groupSize(groupSize),
           _numAggs(numAggs),
@@ -361,11 +376,11 @@ public:
             if(_hashIter != _hashes.end())
             {
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& l = _data[_currHash % _numHashBuckets];
-                _listIter = l.begin();
-                while(_listIter->hash != _currHash)
+                mgd::list<HashTableEntry> const& bucket = _buckets[_currHash % _numHashBuckets];
+                _bucketIter = bucket.begin();
+                while(_bucketIter->hash != _currHash)
                 {
-                    ++_listIter;
+                    ++_bucketIter;
                 }
             }
         }
@@ -387,8 +402,8 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "iterating past end";
             }
-            ++(_listIter);
-            if (_listIter->hash != _currHash)
+            ++(_bucketIter);
+            if (_bucketIter->hash != _currHash)
             {
                 ++(_hashIter);
                 if(end())
@@ -396,11 +411,11 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& l = _data[_currHash % _numHashBuckets];
-                _listIter = l.begin();
-                while(_listIter->hash != _currHash)
+                mgd::list<HashTableEntry> const& bucket = _buckets[_currHash % _numHashBuckets];
+                _bucketIter = bucket.begin();
+                while(_bucketIter->hash != _currHash)
                 {
-                   ++_listIter;
+                   ++_bucketIter;
                 }
             }
         }
@@ -421,7 +436,7 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return _listIter->groupPtr();
+            return &(_values[_bucketIter->idx]);
         }
 
         vector<Value const*> const& getGroupVector()
@@ -440,7 +455,7 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return &(_listIter->state[0]);
+            return &(_values[_bucketIter->idx + _groupSize]);
         }
 
         vector<Value const*> const& getStateVector()
@@ -457,12 +472,12 @@ public:
 
     const_iterator getIterator() const
     {
-        return const_iterator(_data, _hashes, _groupSize, _numAggs, _numHashBuckets);
+        return const_iterator(_values, _buckets, _hashes, _groupSize, _numAggs, _numHashBuckets);
     }
 
     void logStuff()
     {
-        LOG4CXX_DEBUG(logger, "AHTSTAT hashes "<<_hashes.size()<<" groups "<<_numGroups<<" alloc "<<_arena->allocated()<<" large_vals "<<_largeValueMemory<<" total "<<usedBytes());
+        LOG4CXX_DEBUG(logger, "AHTSTAT hashes "<<_hashes.size()<<" groups "<<_numGroups<<" large_vals "<<_largeValueMemory<<" total "<<usedBytes());
     }
 };
 

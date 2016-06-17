@@ -474,7 +474,6 @@ public:
         return false;
     }
 
-
     /**
      * Compare two groups, both must have getGroupSize() values and be groupValid(). g1 is assumed c-style allocated.
      * @return true if g1 < g2, false otherwise.
@@ -511,10 +510,11 @@ public:
         {
             Value const& v1 = *(g1[i]);
             Value const& v2 = *(g2[i]);
-            if( v1 != v2 )
+            if(v1.size() == v2.size()  &&  memcmp(v1.data(), v2.data(), v1.size()) == 0)
             {
-                return false;
+                continue;
             }
+            return false;
         }
         return true;
     }
@@ -529,10 +529,11 @@ public:
         {
             Value const& v1 = g1[i];
             Value const& v2 = *(g2[i]);
-            if( v1 != v2 )
+            if(v1.size() == v2.size()  &&  memcmp(v1.data(), v2.data(), v1.size()) == 0)
             {
-                return false;
+                continue;
             }
+            return false;
         }
         return true;
     }
