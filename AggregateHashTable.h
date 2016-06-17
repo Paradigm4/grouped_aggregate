@@ -98,23 +98,6 @@ uint64_t hashGroup(std::vector<Value const*> const& group, size_t const groupSiz
     {
         totalSize += group[i]->size();
     }
-    if(totalSize <= 8)
-    {
-        uint64_t hash = 0;
-        char* hb = (char*) &hash;
-        for(size_t i =0; i<groupSize; ++i)
-        {
-            Value const* v = group[i];
-            char* vd =  (char*) v->data();
-            for(size_t j=0; j<v->size(); ++j)
-            {
-                *hb = *vd;
-                ++hb;
-                ++vd;
-            }
-        }
-        return hash;
-    }
     static std::vector<char> buf (64);
     if(buf.size() < totalSize)
     {
@@ -343,6 +326,7 @@ public:
         size_t const _numHashBuckets;
         mgd::vector<size_t>::const_iterator _hashIter;
         uint64_t _currHash;
+        mgd::list<HashTableEntry> const* _bucket;
         mgd::list<HashTableEntry>::const_iterator _bucketIter;
         vector<Value const*> _groupResult;
         vector<Value const*> _aggStateResult;
@@ -376,8 +360,8 @@ public:
             if(_hashIter != _hashes.end())
             {
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& bucket = _buckets[_currHash % _numHashBuckets];
-                _bucketIter = bucket.begin();
+                _bucket = &(_buckets[_currHash % _numHashBuckets]);
+                _bucketIter = _bucket->begin();
                 while(_bucketIter->hash != _currHash)
                 {
                     ++_bucketIter;
@@ -403,7 +387,7 @@ public:
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "iterating past end";
             }
             ++(_bucketIter);
-            if (_bucketIter->hash != _currHash)
+            if (_bucketIter == _bucket->end() || _bucketIter->hash != _currHash)
             {
                 ++(_hashIter);
                 if(end())
@@ -411,8 +395,8 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                mgd::list<HashTableEntry> const& bucket = _buckets[_currHash % _numHashBuckets];
-                _bucketIter = bucket.begin();
+                _bucket = &(_buckets[_currHash % _numHashBuckets]);
+                _bucketIter = _bucket->begin();
                 while(_bucketIter->hash != _currHash)
                 {
                    ++_bucketIter;
