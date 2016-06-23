@@ -50,103 +50,178 @@ using std::shared_ptr;
 using std::dynamic_pointer_cast;
 using grouped_aggregate::Settings;
 
-#define ROT32(x, y) ((x << y) | (x >> (32 - y))) // avoid effort
-uint32_t murmur3_32(const char *key, uint32_t len, uint32_t const seed = 0x5C1DB123)
-{
-    static const uint32_t c1 = 0xcc9e2d51;
-    static const uint32_t c2 = 0x1b873593;
-    static const uint32_t r1 = 15;
-    static const uint32_t r2 = 13;
-    static const uint32_t m = 5;
-    static const uint32_t n = 0xe6546b64;
-    uint32_t hash = seed;
-    const int nblocks = len / 4;
-    const uint32_t *blocks = (const uint32_t *) key;
-    int i;
-    uint32_t k;
-    for (i = 0; i < nblocks; i++)
-    {
-        k = blocks[i];
-        k *= c1;
-        k = ROT32(k, r1);
-        k *= c2;
-        hash ^= k;
-        hash = ROT32(hash, r2) * m + n;
-    }
-    const uint8_t *tail = (const uint8_t *) (key + nblocks * 4);
-    uint32_t k1 = 0;
-    switch (len & 3)
-    {
-    case 3:
-        k1 ^= tail[2] << 16;
-    case 2:
-        k1 ^= tail[1] << 8;
-    case 1:
-        k1 ^= tail[0];
-        k1 *= c1;
-        k1 = ROT32(k1, r1);
-        k1 *= c2;
-        hash ^= k1;
-    }
-    hash ^= len;
-    hash ^= (hash >> 16);
-    hash *= 0x85ebca6b;
-    hash ^= (hash >> 13);
-    hash *= 0xc2b2ae35;
-    hash ^= (hash >> 16);
-    return hash;
-}
+/**
+ * We attempt to hash groups of 1 or more SciDB values (group) + 1 or more SciDB values (states) into a in-memory structure
+ * keyed by the group that allows quick addition or lookup.
+ *
+ * This structure is made specifically for aggregation. Semantically it is a lot like a table where some columns are "groups" and
+ * other columns are "states" for example:
+ *
+ * group0, group1, state0
+ * "alex",      1,    5.4
+ *  "bob",      2,    8.2
+ * "kyle",      1,    2.4
+ *
+ * Data are added to the structure one tuple (group + state) at a time. Adding a group that already exists results in
+ * aggregate accumulation of the states. For example inserting this tuple:
+ * "alex",      1,    1.5
+ *
+ * results in:
+ *
+ * group0, group1, state0
+ * "alex",      1,    6.9   <-- assuming the aggregate is a floating point sum
+ *  "bob",      2,    8.2
+ * "kyle",      1,    2.4
+ *
+ * Note there need not be only one state per group and the states may be variable-sized, depending on which aggregate(s) are used
+ *
+ * This structure supports overall grouped aggregation of SciDB and uses hashing internally. The hashes computed by this table ar
+ * used for other key purposes:
+ *  - distribute data by hash for good smearing across the cluster
+ *  - order data by hash, then group for fast merge of results that come from different instances.
+ *
+ * Moreover, a memory limit is imposed over the table and the total memory footprint is accounted for carefully.
+ *
+ * More moreover, we don't know how many groups we will have until we insert all the data. The input may be terabytes in size, bu
+ * easily condense to 10 groups that fit neatly in memory.
+ *
+ * For those reasons, some key properties are implemented
+ * 1) Hash values are try to be uniform smeared 32-bit between 0 and 2^32 - for even subsequent data distribution in the cluster.
+ * 2) Hhash values are accessible outside the structure. This is one reason why we didn't use an STL structure.
+ * 3) Iteration over the data is supported in order of increasing hash. This is another reason why we didn't use an STL structure
+ * 4) No rehashing. We know the memory limit, so we start out with a large enough number of buckets.
+ * Didn't want to be in the business of copying over data or finidng nearest primes.
+ *
+ * At the moment, the structure has a maximum size limit of around ~4.3 Billion groups (on a single instance) because it uses
+ * a 4-byte integer index. That should be easy to change to 8 bytes if needed.
+ */
 
-uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
-{
-    size_t totalSize = 0;
-    for(size_t i =0; i<groupSize; ++i)
-    {
-        totalSize += group[i]->size();
-    }
-    static std::vector<char> buf (64);
-    if(buf.size() < totalSize)
-    {
-        buf.resize(totalSize);
-    }
-    char* ch = &buf[0];
-    for(size_t i =0; i<groupSize; ++i)
-    {
-        memcpy(ch, group[i]->data(), group[i]->size());
-        ch += group[i]->size();
-    }
-    return murmur3_32(&buf[0], totalSize);
-}
-
-static void EXCEPTION_ASSERT(bool cond)
-{
-    if (! cond)
-    {
-        throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Internal inconsistency";
-    }
-}
-
-struct HashTableEntry
-{
-    uint32_t hash;
-    uint32_t idx;
-    HashTableEntry* next;
-
-    HashTableEntry(uint32_t const hash, uint32_t const idx, HashTableEntry* next):
-        hash(hash), idx(idx), next(next)
-    {}
-};
 
 /**
+ * We'd like to see a load factor of 4 or less. A group occupies at least 32 bytes in the structure,
+ * usually more - depending on how many values and states there are and also whether they are variable sized.
+ * An empty bucket is an 8-byte pointer. So the ratio of group data / bucket overhead is at least 16.
+ * We that in mind we just pick a few primes for the most commonly used memory limits. We start with that
+ * many buckets and don't bother rehashing:
  *
- *
- *
- *
+ * memory_limit_MB     max_groups    desired_buckets   nearest_prime   buckets_overhead_MB
+ *             128        4194304            1048576         1048573                     8
+ *             256        8388608            2097152         2097143                    16
+ *             512       16777216            4194304         4194301                    32
+ *           1,024       33554432            8388608         8388617                    64
+ *           2,048       67108864           16777216        16777213                   128
+ *           4,096      134217728           33554432        33554467                   256
+ *           8,192      268435456           67108864        67108859                   512
+ *          16,384      536870912          134217728       134217757                 1,024
+ *          32,768     1073741824          268435456       268435459                 2,048
+ *          65,536     2147483648          536870912       536870909                 4,096
+ *         131,072     4294967296         1073741824      1073741827                 8,192
+ *            more                                        2147483647                16,384
  */
+
+static const size_t NUM_SIZES = 12;
+static const size_t memLimits[NUM_SIZES]  = {    128,     256,     512,    1024,     2048,     4096,     8192,     16384,     32768,     65536,     131072,  ((size_t)-1) };
+static const size_t tableSizes[NUM_SIZES] = {1048573, 2097143, 4194301, 8388617, 16777213, 33554467, 67108859, 134217757, 268435459, 536870909, 1073741827,    2147483647 };
+
+static size_t pickTableSize(size_t memLimit)
+{
+   for(size_t i =0; i<NUM_SIZES; ++i)
+   {
+       if(memLimit <= memLimits[i])
+       {
+           return tableSizes[i];
+       }
+   }
+   return tableSizes[NUM_SIZES-1];
+}
 
 class AggregateHashTable
 {
 private:
+    //-----------------------------------------------------------------------------
+    // MurmurHash3 was written by Austin Appleby, and is placed in the public
+    // domain. The author hereby disclaims copyright to this source code.
+    #define ROT32(x, y) ((x << y) | (x >> (32 - y))) // avoid effort
+    static uint32_t murmur3_32(const char *key, uint32_t len, uint32_t const seed = 0x5C1DB123)
+    {
+        static const uint32_t c1 = 0xcc9e2d51;
+        static const uint32_t c2 = 0x1b873593;
+        static const uint32_t r1 = 15;
+        static const uint32_t r2 = 13;
+        static const uint32_t m = 5;
+        static const uint32_t n = 0xe6546b64;
+        uint32_t hash = seed;
+        const int nblocks = len / 4;
+        const uint32_t *blocks = (const uint32_t *) key;
+        int i;
+        uint32_t k;
+        for (i = 0; i < nblocks; i++)
+        {
+            k = blocks[i];
+            k *= c1;
+            k = ROT32(k, r1);
+            k *= c2;
+            hash ^= k;
+            hash = ROT32(hash, r2) * m + n;
+        }
+        const uint8_t *tail = (const uint8_t *) (key + nblocks * 4);
+        uint32_t k1 = 0;
+        switch (len & 3)
+        {
+        case 3:
+            k1 ^= tail[2] << 16;
+        case 2:
+            k1 ^= tail[1] << 8;
+        case 1:
+            k1 ^= tail[0];
+            k1 *= c1;
+            k1 = ROT32(k1, r1);
+            k1 *= c2;
+            hash ^= k1;
+        }
+        hash ^= len;
+        hash ^= (hash >> 16);
+        hash *= 0x85ebca6b;
+        hash ^= (hash >> 13);
+        hash *= 0xc2b2ae35;
+        hash ^= (hash >> 16);
+        return hash;
+    }
+    //End of MurmurHash3 Implementation
+    //-----------------------------------------------------------------------------
+
+    static uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+    {
+        size_t totalSize = 0;
+        for(size_t i =0; i<groupSize; ++i)
+        {
+            totalSize += group[i]->size();
+        }
+        static std::vector<char> buf (64);
+        if(buf.size() < totalSize)
+        {
+            buf.resize(totalSize);
+        }
+        char* ch = &buf[0];
+        for(size_t i =0; i<groupSize; ++i)
+        {
+            memcpy(ch, group[i]->data(), group[i]->size());
+            ch += group[i]->size();
+        }
+        return murmur3_32(&buf[0], totalSize);
+    }
+
+    struct HashTableEntry
+    {
+        uint32_t hash;
+        uint32_t idx;
+        HashTableEntry* next;
+
+        HashTableEntry(uint32_t const hash, uint32_t const idx, HashTableEntry* next):
+            hash(hash), idx(idx), next(next)
+        {}
+    };
+
     Settings&                                _settings;
     ArenaPtr                                 _arena;
     size_t const                             _groupSize;
@@ -221,7 +296,7 @@ public:
         _arena(arena),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
-        _numHashBuckets(settings.getNumHashBuckets()),
+        _numHashBuckets( settings.numHashBucketsSet() ? settings.getNumHashBuckets() : pickTableSize(settings.getMaxTableSize() / (1024*1024) )),
         _hashes(_arena, 0),
         _buckets(_arena, _numHashBuckets, NULL),
         _values(_arena, 0),
@@ -229,7 +304,10 @@ public:
         _lastState(NULL),
         _largeValueMemory(0),
         _numGroups(0)
-    {}
+    {
+        LOG4CXX_DEBUG(logger, "GAGG buckets "<<_numHashBuckets);
+
+    }
 
     void insert(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
     {
@@ -328,10 +406,12 @@ public:
      * Sort the hash keys in the table. A subsequent call to getIterator shall return an iterator
      * that will iterate over the data in the order of increasing hash, then increasing group.
      * If this is not called, the iterator will return over the hashes in arbitrary order.
-     * This is a lot faster than dumping the thing into an array and sorting that.
+     * Yeah algorithmically it's all n lg n but in practice this is hella faster than sorting
+     * SciDB values.
      */
     void sortKeys()
     {
+        //TODO: make this a radix thing.
         std::sort(_hashes.begin(), _hashes.end());
     }
 
@@ -478,7 +558,7 @@ public:
 
     void logStuff()
     {
-        LOG4CXX_DEBUG(logger, "AHTSTAT hashes "<<_hashes.size()<<" groups "<<_numGroups<<" large_vals "<<_largeValueMemory<<" total "<<usedBytes());
+        LOG4CXX_DEBUG(logger, "GAGG hashes "<<_hashes.size()<<" groups "<<_numGroups<<" large_vals "<<_largeValueMemory<<" total "<<usedBytes());
     }
 };
 

@@ -101,7 +101,7 @@ public:
         _numInstances           ( query -> getInstancesCount() ),
         _inputSorted            ( false ),
         _inputSortedSet         ( false ),
-        _numHashBuckets         ( 1000037 ),
+        _numHashBuckets         ( 1048573 ),
         _numHashBucketsSet      ( false )
     {
         bool autoInputSorted = true;
@@ -206,12 +206,13 @@ public:
         {
             _inputSorted = autoInputSorted;
         }
-        LOG4CXX_DEBUG(logger, "GAG maxTableSize "<<_maxTableSize<<
+        LOG4CXX_DEBUG(logger, "GAGG maxTableSize "<<_maxTableSize<<
                               " spillChunkSize " <<_spilloverChunkSize<<
                               " mergeChunkSize " <<_mergeChunkSize<<
                               " outputChunkSize "<<_outputChunkSize<<
                               " sorted "<<_inputSorted<<
-                              " numHashBuckets "<<_numHashBuckets);
+                              " numHashBuckets "<<_numHashBuckets<<
+                              " buckets set "<<_numHashBucketsSet);
     }
 
 private:
