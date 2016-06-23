@@ -379,6 +379,11 @@ public:
         return _numHashBuckets;
     }
 
+    bool numHashBucketsSet() const
+    {
+        return _numHashBucketsSet;
+    }
+
     size_t getNumAggs() const
     {
         return _numAggs;
@@ -397,7 +402,7 @@ public:
         size_t i =0;
         if(type != FINAL)
         {
-            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT64,    0, 0));
+            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT32,    0, 0));
         }
         for (size_t j =0; j<_groupSize; ++j)
         {

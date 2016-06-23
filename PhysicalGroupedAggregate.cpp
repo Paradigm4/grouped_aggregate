@@ -68,7 +68,7 @@ private:
     size_t const _chunkSize;
     size_t const _numInstances;
     InstanceID const _myInstanceId;
-    vector<uint64_t> _hashBreaks;
+    vector<uint32_t> _hashBreaks;
     size_t _currentBreak;
     shared_ptr<Query> _query;
     Settings& _settings;
@@ -119,7 +119,7 @@ public:
         {
             _curStates[i].setNull(0);
         }
-        uint64_t break_interval = std::numeric_limits<uint64_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
+        uint32_t break_interval = std::numeric_limits<uint32_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
         for(size_t i=0; i<_numInstances-1; ++i)
         {
             _hashBreaks[i] = break_interval * (i+1);
@@ -164,10 +164,10 @@ private:
     }
 
 public:
-    void writeValue (uint64_t const hash, vector<Value const*> const& group, vector<Value const*> const& inputs)
+    void writeValue (uint32_t const hash, vector<Value const*> const& group, vector<Value const*> const& inputs)
     {
         Value buf;
-        buf.setUint64(hash);
+        buf.setUint32(hash);
         writeValue(buf, group, inputs);
     }
 
@@ -188,7 +188,7 @@ public:
         }
         else
         {
-            if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || !_settings.groupEqual(&(_curGroup[0]), group))
+            if(_curHash.getMissingReason() == 0 || _curHash.getUint32() != hash.getUint32() || !_settings.groupEqual(&(_curGroup[0]), group))
             {
                 if(_curHash.getMissingReason() != 0)
                 {
@@ -202,10 +202,10 @@ public:
         }
     }
 
-    void writeState (uint64_t const hash, vector<Value const*> const& group, vector<Value const*> const& states)
+    void writeState (uint32_t const hash, vector<Value const*> const& group, vector<Value const*> const& states)
     {
         Value buf;
-        buf.setUint64(hash);
+        buf.setUint32(hash);
         writeState(buf, group, states);
     }
 
@@ -217,7 +217,7 @@ public:
         }
         else
         {
-            if(_curHash.getMissingReason() == 0 || _curHash.getUint64() != hash.getUint64() || !_settings.groupEqual(&(_curGroup[0]), group))
+            if(_curHash.getMissingReason() == 0 || _curHash.getUint32() != hash.getUint32() || !_settings.groupEqual(&(_curGroup[0]), group))
             {
                 if(_curHash.getMissingReason() != 0)
                 {
@@ -235,7 +235,7 @@ private:
     void writeCurrent()
     {
         //gonna do a write, then!
-        while( SCHEMA_TYPE == Settings::MERGE && _currentBreak < _numInstances - 1 && _curHash.getUint64() > _hashBreaks[_currentBreak] )
+        while( SCHEMA_TYPE == Settings::MERGE && _currentBreak < _numInstances - 1 && _curHash.getUint32() > _hashBreaks[_currentBreak] )
         {
             ++_currentBreak;
         }
@@ -475,7 +475,7 @@ public:
                     }
                     continue;
                 }
-                uint64_t hash;
+                uint32_t hash;
                 for(size_t a=0; a<numAggs; ++a)
                 {
                     input[a] = &(iciters[a]->getItem());
@@ -574,8 +574,8 @@ public:
                 {
                     input[a] = &(iciters[a]->getItem());
                 }
-                while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint64() ||
-                                        (ahtIter.getCurrentHash() == hash.getUint64() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
+                while(!ahtIter.end() && (ahtIter.getCurrentHash() < hash.getUint32() ||
+                                        (ahtIter.getCurrentHash() == hash.getUint32() && settings.groupLess(ahtIter.getCurrentGroup(), group))))
                 {
                     mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getStateVector());
                     ahtIter.next();
@@ -692,14 +692,14 @@ public:
         while(numClosed < numInstances)
         {
             bool minHashSet = false;
-            uint64_t minHash=0;
+            uint32_t minHash=0;
             for(size_t inst=0; inst<numInstances; ++inst)
             {
                 if(hciters[inst] == 0)
                 {
                     continue;
                 }
-                uint64_t hash    = hciters[inst]->getItem().getUint64();
+                uint32_t hash    = hciters[inst]->getItem().getUint32();
                 for(size_t g=0; g<groupSize; ++g)
                 {
                     curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
@@ -718,7 +718,7 @@ public:
                 {
                     continue;
                 }
-                uint64_t hash    = hciters[inst]->getItem().getUint64();
+                uint32_t hash    = hciters[inst]->getItem().getUint32();
                 for(size_t g=0; g<groupSize; ++g)
                 {
                     curGroup[g] = &(gciters[inst * groupSize + g]->getItem());
@@ -731,7 +731,7 @@ public:
             for(size_t i =0; i<toAdvance.size(); ++i)
             {
                 size_t const inst = toAdvance[i];
-                uint64_t hash    = hciters[inst]->getItem().getUint64();
+                uint32_t hash    = hciters[inst]->getItem().getUint32();
                 for(size_t g=0; g<groupSize; ++g)
                 {
                     curGroup[g] = &(gciters[inst * groupSize + g]->getItem());

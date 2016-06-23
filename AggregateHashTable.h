@@ -50,48 +50,54 @@ using std::shared_ptr;
 using std::dynamic_pointer_cast;
 using grouped_aggregate::Settings;
 
-// MurmurHash2, 64-bit versions, by Austin Appleby
-// From https://sites.google.com/site/murmurhash/
-// MIT license
-uint64_t mh64a ( const void * key, int len, uint32_t const seed = 0x5C1DB123 )
+#define ROT32(x, y) ((x << y) | (x >> (32 - y))) // avoid effort
+uint32_t murmur3_32(const char *key, uint32_t len, uint32_t const seed = 0x5C1DB123)
 {
-    if (key == 0 || len == 0)
+    static const uint32_t c1 = 0xcc9e2d51;
+    static const uint32_t c2 = 0x1b873593;
+    static const uint32_t r1 = 15;
+    static const uint32_t r2 = 13;
+    static const uint32_t m = 5;
+    static const uint32_t n = 0xe6546b64;
+    uint32_t hash = seed;
+    const int nblocks = len / 4;
+    const uint32_t *blocks = (const uint32_t *) key;
+    int i;
+    uint32_t k;
+    for (i = 0; i < nblocks; i++)
     {
-        throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "bad murmurhash call";
+        k = blocks[i];
+        k *= c1;
+        k = ROT32(k, r1);
+        k *= c2;
+        hash ^= k;
+        hash = ROT32(hash, r2) * m + n;
     }
-    const uint64_t m = 0xc6a4a7935bd1e995;
-    const int r = 47;
-    uint64_t h = seed ^ len;
-    const uint64_t * data = (const uint64_t *)key;
-    const uint64_t * end = data + (len/8);
-    while(data != end)
+    const uint8_t *tail = (const uint8_t *) (key + nblocks * 4);
+    uint32_t k1 = 0;
+    switch (len & 3)
     {
-            uint64_t k = *data++;
-            k *= m;
-            k ^= k >> r;
-            k *= m;
-            h ^= k;
-            h *= m;
+    case 3:
+        k1 ^= tail[2] << 16;
+    case 2:
+        k1 ^= tail[1] << 8;
+    case 1:
+        k1 ^= tail[0];
+        k1 *= c1;
+        k1 = ROT32(k1, r1);
+        k1 *= c2;
+        hash ^= k1;
     }
-    const unsigned char * data2 = (const unsigned char*)data;
-    switch(len & 7)
-    {
-    case 7: h ^= uint64_t(data2[6]) << 48;
-    case 6: h ^= uint64_t(data2[5]) << 40;
-    case 5: h ^= uint64_t(data2[4]) << 32;
-    case 4: h ^= uint64_t(data2[3]) << 24;
-    case 3: h ^= uint64_t(data2[2]) << 16;
-    case 2: h ^= uint64_t(data2[1]) << 8;
-    case 1: h ^= uint64_t(data2[0]);
-            h *= m;
-    };
-    h ^= h >> r;
-    h *= m;
-    h ^= h >> r;
-    return h;
+    hash ^= len;
+    hash ^= (hash >> 16);
+    hash *= 0x85ebca6b;
+    hash ^= (hash >> 13);
+    hash *= 0xc2b2ae35;
+    hash ^= (hash >> 16);
+    return hash;
 }
 
-uint64_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
 {
     size_t totalSize = 0;
     for(size_t i =0; i<groupSize; ++i)
@@ -109,7 +115,7 @@ uint64_t hashGroup(std::vector<Value const*> const& group, size_t const groupSiz
         memcpy(ch, group[i]->data(), group[i]->size());
         ch += group[i]->size();
     }
-    return mh64a(&buf[0], totalSize);
+    return murmur3_32(&buf[0], totalSize);
 }
 
 static void EXCEPTION_ASSERT(bool cond)
@@ -122,13 +128,21 @@ static void EXCEPTION_ASSERT(bool cond)
 
 struct HashTableEntry
 {
-    uint64_t hash;
-    size_t   idx;
+    uint32_t hash;
+    uint32_t idx;
+    HashTableEntry* next;
 
-    HashTableEntry(uint64_t const hash, size_t const idx):
-        hash(hash), idx(idx)
+    HashTableEntry(uint32_t const hash, uint32_t const idx, HashTableEntry* next):
+        hash(hash), idx(idx), next(next)
     {}
 };
+
+/**
+ *
+ *
+ *
+ *
+ */
 
 class AggregateHashTable
 {
@@ -138,10 +152,9 @@ private:
     size_t const                             _groupSize;
     size_t const                             _numAggs;
     size_t const                             _numHashBuckets;
-    mgd::vector<uint64_t>                    _hashes;
-    mgd::vector< mgd::list<HashTableEntry> > _buckets;
-    mgd::vector< Value >                     _values;
-    mgd::list<HashTableEntry>::iterator      _iter;
+    mgd::vector<uint32_t>                    _hashes;
+    mgd::vector<HashTableEntry*>             _buckets;
+    mgd::vector<Value>                       _values;
     Value const*                             _lastGroup;
     Value *                                  _lastState;
     ssize_t                                  _largeValueMemory;
@@ -169,9 +182,13 @@ private:
        _largeValueMemory += (finalMem - initialMem);
     }
 
-    size_t addNewGroup(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
+    uint32_t addNewGroup(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
     {
-        size_t idx = _values.size();
+        if(_values.size() + _numAggs + _groupSize > std::numeric_limits<uint32_t>::max())
+        {
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<"hash table size limit exceeded";
+        }
+        uint32_t idx = _values.size();
         for(size_t i=0; i<_groupSize; ++i)
         {
             Value const& groupItem = *(group[i]);
@@ -188,12 +205,12 @@ private:
         return idx;
     }
 
-    Value const* getGroup(size_t const idx) const
+    Value const* getGroup(uint32_t const idx) const
     {
         return &(_values[idx]);
     }
 
-    Value* getStates(size_t const idx)
+    Value* getStates(uint32_t const idx)
     {
         return &(_values[idx + _groupSize]);
     }
@@ -206,7 +223,7 @@ public:
         _numAggs(settings.getNumAggs()),
         _numHashBuckets(settings.getNumHashBuckets()),
         _hashes(_arena, 0),
-        _buckets(_arena, _numHashBuckets, mgd::list<HashTableEntry>(_arena)),
+        _buckets(_arena, _numHashBuckets, NULL),
         _values(_arena, 0),
         _lastGroup(NULL),
         _lastState(NULL),
@@ -221,50 +238,54 @@ public:
             accumulateStates(_lastState, input);
             return;
         }
-        uint64_t hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry>& bucket = _buckets[hash % _numHashBuckets];
-        _iter = bucket.begin();
-        while( _iter != bucket.end() && _iter->hash < hash)
+        uint32_t hash = hashGroup(group, _groupSize);
+        bool newHash = true;
+        bool newGroup = true;
+        HashTableEntry** entry = &(_buckets[hash % _numHashBuckets]);
+        while( (*entry) != NULL)
         {
-            ++_iter;
-        }
-        Value const* storedGrp = NULL;
-        Value* storedStates = NULL;
-        bool hashExists  = false;
-        bool equal       = false;
-        while (_iter != bucket.end() && _iter->hash == hash)
-        {
-            hashExists = true;
-            storedGrp = getGroup( _iter->idx);
-            storedStates = getStates( _iter->idx);
-            if(_settings.groupEqual(storedGrp, group))
-            {
-                equal = true;
-                break;
-            }
-            else if( ! _settings.groupLess(storedGrp, group))
+            HashTableEntry** next = &((*entry)->next);
+            if((*entry)->hash > hash)
             {
                 break;
             }
-            ++_iter;
+            else if((*entry) -> hash == hash)
+            {
+                newHash = false;
+                Value const* storedGrp = getGroup( (*entry)->idx);
+                if(_settings.groupEqual(storedGrp, group))
+                {
+                    newGroup = false;
+                    break;
+                }
+                else if (! _settings.groupLess(storedGrp, group))
+                {
+                    break;
+                }
+            }
+            entry = next;
         }
-        if( hashExists && equal )
+        if(newGroup)
         {
-            accumulateStates(storedStates, input);
-            _lastGroup = getGroup(_iter->idx);
-            _lastState = getStates(_iter->idx);
-        }
-        else
-        {
-            if(!hashExists)
+            if(newHash)
             {
                 _hashes.push_back(hash);
             }
-            size_t idx = addNewGroup(group, input);
-            bucket.emplace(_iter, hash, idx);
             ++_numGroups;
+            uint32_t idx = addNewGroup(group, input);
+            HashTableEntry* newEntry = ((HashTableEntry*)_arena->allocate(sizeof(HashTableEntry)));
+            *newEntry = HashTableEntry(hash,idx,*entry);
+            *entry = newEntry;
             _lastGroup = getGroup(idx);
             _lastState = getStates(idx);
+        }
+        else
+        {
+            Value const* storedGrp = getGroup( (*entry)->idx);
+            Value* storedStates = getStates((*entry)->idx);
+            accumulateStates(storedStates, input);
+            _lastGroup = storedGrp;
+            _lastState = storedStates;
         }
     }
 
@@ -272,22 +293,21 @@ public:
      * @param[out] hash computes the hash of group as a side-effect
      * @return true if the table contains the group, false otherwise
      */
-    bool contains(std::vector<Value const*> const& group, uint64_t& hash) const
+    bool contains(std::vector<Value const*> const& group, uint32_t& hash) const
     {
         hash = hashGroup(group, _groupSize);
-        mgd::list<HashTableEntry> const& bucket = _buckets[hash % _numHashBuckets];
-        mgd::list<HashTableEntry>::const_iterator citer = bucket.begin();
-        while(citer != bucket.end())
+        HashTableEntry const* bucket = _buckets[hash % _numHashBuckets];
+        while(bucket != NULL)
         {
-            if(citer->hash == hash && _settings.groupEqual(getGroup(citer->idx), group))
+            if(bucket->hash == hash && _settings.groupEqual(getGroup(bucket->idx), group))
             {
                 return true;
             }
-            if(citer->hash > hash)
+            if(bucket->hash > hash)
             {
                 return false;
             }
-            ++citer;
+            bucket = bucket->next;
         }
         return false;
     }
@@ -299,7 +319,7 @@ public:
     {
         if(_largeValueMemory < 0)
         {
-            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<" inconsistent state size overflow";
+            throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<"inconsistent state size overflow";
         }
         return _arena->allocated() + _largeValueMemory;
     }
@@ -308,7 +328,7 @@ public:
      * Sort the hash keys in the table. A subsequent call to getIterator shall return an iterator
      * that will iterate over the data in the order of increasing hash, then increasing group.
      * If this is not called, the iterator will return over the hashes in arbitrary order.
-     * This is a lot easier than dumping the thing into an array and sorting that.
+     * This is a lot faster than dumping the thing into an array and sorting that.
      */
     void sortKeys()
     {
@@ -319,15 +339,14 @@ public:
     {
     private:
         mgd::vector <Value> const& _values;
-        mgd::vector <mgd::list<HashTableEntry> > const& _buckets;
-        mgd::vector<size_t> const& _hashes;
+        mgd::vector <HashTableEntry* > const& _buckets;
+        mgd::vector<uint32_t> const& _hashes;
         size_t const _groupSize;
         size_t const _numAggs;
         size_t const _numHashBuckets;
-        mgd::vector<size_t>::const_iterator _hashIter;
-        uint64_t _currHash;
-        mgd::list<HashTableEntry> const* _bucket;
-        mgd::list<HashTableEntry>::const_iterator _bucketIter;
+        mgd::vector<uint32_t>::const_iterator _hashIter;
+        uint32_t _currHash;
+        HashTableEntry const* _bucket;
         vector<Value const*> _groupResult;
         vector<Value const*> _aggStateResult;
 
@@ -336,8 +355,8 @@ public:
          * To get one, call AggregateHashTable::getIterator
          */
         const_iterator(mgd::vector<Value> const& values,
-                       mgd::vector <mgd::list<HashTableEntry> > const& buckets,
-                       mgd::vector<size_t> const& hashes,
+                       mgd::vector <HashTableEntry*> const& buckets,
+                       mgd::vector<uint32_t> const& hashes,
                        size_t const groupSize, size_t const numAggs, size_t const numHashBuckets):
           _values(values),
           _buckets(buckets),
@@ -360,11 +379,10 @@ public:
             if(_hashIter != _hashes.end())
             {
                 _currHash = (*_hashIter);
-                _bucket = &(_buckets[_currHash % _numHashBuckets]);
-                _bucketIter = _bucket->begin();
-                while(_bucketIter->hash != _currHash)
+                _bucket = (_buckets[_currHash % _numHashBuckets]);
+                while(_bucket->hash != _currHash)
                 {
-                    ++_bucketIter;
+                    _bucket = _bucket->next;
                 }
             }
         }
@@ -386,8 +404,8 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "iterating past end";
             }
-            ++(_bucketIter);
-            if (_bucketIter == _bucket->end() || _bucketIter->hash != _currHash)
+            _bucket = _bucket->next;
+            if ( _bucket == NULL || _bucket->hash != _currHash)
             {
                 ++(_hashIter);
                 if(end())
@@ -395,17 +413,16 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                _bucket = &(_buckets[_currHash % _numHashBuckets]);
-                _bucketIter = _bucket->begin();
-                while(_bucketIter->hash != _currHash)
+                _bucket = _buckets[_currHash % _numHashBuckets];
+                while(_bucket->hash != _currHash)
                 {
-                   ++_bucketIter;
+                   _bucket = _bucket->next;
                 }
             }
         }
 
         //GETTERS
-        uint64_t getCurrentHash() const
+        uint32_t getCurrentHash() const
         {
             if (end())
             {
@@ -420,7 +437,7 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return &(_values[_bucketIter->idx]);
+            return &(_values[_bucket->idx]);
         }
 
         vector<Value const*> const& getGroupVector()
@@ -439,7 +456,7 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return &(_values[_bucketIter->idx + _groupSize]);
+            return &(_values[_bucket->idx + _groupSize]);
         }
 
         vector<Value const*> const& getStateVector()
