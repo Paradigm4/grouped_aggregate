@@ -418,12 +418,7 @@ public:
     class const_iterator
     {
     private:
-        mgd::vector <Value> const& _values;
-        mgd::vector <HashTableEntry* > const& _buckets;
-        mgd::vector<uint32_t> const& _hashes;
-        size_t const _groupSize;
-        size_t const _numAggs;
-        size_t const _numHashBuckets;
+        AggregateHashTable const* _table;
         mgd::vector<uint32_t>::const_iterator _hashIter;
         uint32_t _currHash;
         HashTableEntry const* _bucket;
@@ -434,18 +429,10 @@ public:
         /**
          * To get one, call AggregateHashTable::getIterator
          */
-        const_iterator(mgd::vector<Value> const& values,
-                       mgd::vector <HashTableEntry*> const& buckets,
-                       mgd::vector<uint32_t> const& hashes,
-                       size_t const groupSize, size_t const numAggs, size_t const numHashBuckets):
-          _values(values),
-          _buckets(buckets),
-          _hashes(hashes),
-          _groupSize(groupSize),
-          _numAggs(numAggs),
-          _numHashBuckets(numHashBuckets),
-          _groupResult(groupSize, NULL),
-          _aggStateResult(numAggs, NULL)
+        const_iterator(AggregateHashTable const* table):
+          _table(table),
+          _groupResult(_table->_groupSize, NULL),
+          _aggStateResult(_table->_numAggs, NULL)
         {
             restart();
         }
@@ -455,11 +442,11 @@ public:
          */
         void restart()
         {
-            _hashIter = _hashes.begin();
-            if(_hashIter != _hashes.end())
+            _hashIter = _table->_hashes.begin();
+            if(_hashIter != _table->_hashes.end())
             {
                 _currHash = (*_hashIter);
-                _bucket = (_buckets[_currHash % _numHashBuckets]);
+                _bucket = (_table->_buckets[_currHash % _table->_numHashBuckets]);
                 while(_bucket->hash != _currHash)
                 {
                     _bucket = _bucket->next;
@@ -472,7 +459,7 @@ public:
          */
         bool end() const
         {
-            return _hashIter == _hashes.end();
+            return _hashIter == _table->_hashes.end();
         }
 
         /**
@@ -493,7 +480,7 @@ public:
                     return;
                 }
                 _currHash = (*_hashIter);
-                _bucket = _buckets[_currHash % _numHashBuckets];
+                _bucket = _table->_buckets[_currHash % _table->_numHashBuckets];
                 while(_bucket->hash != _currHash)
                 {
                    _bucket = _bucket->next;
@@ -517,13 +504,13 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return &(_values[_bucket->idx]);
+            return &(_table->_values[_bucket->idx]);
         }
 
         vector<Value const*> const& getGroupVector()
         {
             Value const* g = getCurrentGroup();
-            for(size_t i =0; i<_groupSize; ++i)
+            for(size_t i =0; i<_table->_groupSize; ++i)
             {
                 _groupResult[i] = &(g[i]);
             }
@@ -536,13 +523,13 @@ public:
             {
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "access past end";
             }
-            return &(_values[_bucket->idx + _groupSize]);
+            return &(_table->_values[_bucket->idx + _table->_groupSize]);
         }
 
         vector<Value const*> const& getStateVector()
         {
             Value const* s = getCurrentState();
-            for(size_t i =0; i<_numAggs; ++i)
+            for(size_t i =0; i<_table->_numAggs; ++i)
             {
                 _aggStateResult[i] = &(s[i]);
             }
@@ -553,7 +540,7 @@ public:
 
     const_iterator getIterator() const
     {
-        return const_iterator(_values, _buckets, _hashes, _groupSize, _numAggs, _numHashBuckets);
+        return const_iterator(this);
     }
 
     void logStuff()
