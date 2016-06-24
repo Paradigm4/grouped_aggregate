@@ -49,6 +49,46 @@ using boost::bad_lexical_cast;
 // Logger for operator. static to prevent visibility of variable outside of file
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.grouped_aggregate"));
 
+/**
+ * Table sizing considerations:
+ *
+ * We'd like to see a load factor of 4 or less. A group occupies at least 32 bytes in the structure,
+ * usually more - depending on how many values and states there are and also whether they are variable sized.
+ * An empty bucket is an 8-byte pointer. So the ratio of group data / bucket overhead is at least 16.
+ * With that in mind we just pick a few primes for the most commonly used memory limits.
+ * We start with that many buckets and, at the moment, we don't bother rehashing:
+ *
+ * memory_limit_MB     max_groups    desired_buckets   nearest_prime   buckets_overhead_MB
+ *             128        4194304            1048576         1048573                     8
+ *             256        8388608            2097152         2097143                    16
+ *             512       16777216            4194304         4194301                    32
+ *           1,024       33554432            8388608         8388617                    64
+ *           2,048       67108864           16777216        16777213                   128
+ *           4,096      134217728           33554432        33554467                   256
+ *           8,192      268435456           67108864        67108859                   512
+ *          16,384      536870912          134217728       134217757                 1,024
+ *          32,768     1073741824          268435456       268435459                 2,048
+ *          65,536     2147483648          536870912       536870909                 4,096
+ *         131,072     4294967296         1073741824      1073741827                 8,192
+ *            more                                        2147483647                16,384
+ */
+
+static const size_t NUM_SIZES = 12;
+static const size_t memLimits[NUM_SIZES]  = {    128,     256,     512,    1024,     2048,     4096,     8192,     16384,     32768,     65536,     131072,  ((size_t)-1) };
+static const size_t tableSizes[NUM_SIZES] = {1048573, 2097143, 4194301, 8388617, 16777213, 33554467, 67108859, 134217757, 268435459, 536870909, 1073741827,    2147483647 };
+
+static size_t chooseNumBuckets(size_t maxTableSize)
+{
+   for(size_t i =0; i<NUM_SIZES; ++i)
+   {
+       if(maxTableSize <= memLimits[i])
+       {
+           return tableSizes[i];
+       }
+   }
+   return tableSizes[NUM_SIZES-1];
+}
+
 /*
  * Settings for the grouped_aggregate operator.
  */
@@ -205,6 +245,10 @@ public:
         if(!_inputSortedSet)
         {
             _inputSorted = autoInputSorted;
+        }
+        if(!_numHashBucketsSet)
+        {
+            _numHashBuckets = chooseNumBuckets(_maxTableSize);
         }
         LOG4CXX_DEBUG(logger, "GAGG maxTableSize "<<_maxTableSize<<
                               " spillChunkSize " <<_spilloverChunkSize<<

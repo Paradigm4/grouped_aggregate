@@ -119,7 +119,7 @@ public:
         {
             _curStates[i].setNull(0);
         }
-        uint32_t break_interval = std::numeric_limits<uint32_t>::max() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
+        uint32_t break_interval = _settings.getNumHashBuckets() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
         for(size_t i=0; i<_numInstances-1; ++i)
         {
             _hashBreaks[i] = break_interval * (i+1);
@@ -538,7 +538,6 @@ public:
         }
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
-        aht.sortKeys();
         aht.logStuff();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
         for(size_t g = 0; g<groupSize; ++g)
