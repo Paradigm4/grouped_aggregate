@@ -42,6 +42,7 @@ grouped_aggregate(input_array, aggregate_1(input_1) [as alias_1], group_1,
                   [, aggregate_2(input_2),...]
                   [, group_2,...]
                   [, 'setting=value'])
+
 Where
   input_array            :: any SciDB array
   aggregate_1...N        :: any SciDB-registered aggregate
@@ -55,11 +56,11 @@ Optional tuning settings:
                                    if aggregating by non-last dimension, false otherwise.
   max_table_size=MB             :: the amount of memory (in MB) that the operator's hash table structure
                                    may consume. Once the table exceeds this size, new aggregate groups 
-                                   are placed into a spillover array defaults to the merge-sort-buffer 
+                                   are placed into a spillover array. Defaults to the merge-sort-buffer 
                                    configuration setting.
   num_hash_buckets=N            :: the number of hash buckets to allocate in the hash table. Larger 
                                    values improve speed but also use more memory. Should be a prime. 
-                                   Default: 1,000,037.
+                                   Default is based on the max_table_size.
   spill_chunk_size=C            :: the chunk size of the spill-over array. Defaults to 100,000. Should
                                    be smaller if there are are many of group-by attributes or aggregates. 
                                    TBD: automate
