@@ -371,12 +371,15 @@ public:
         void restart()
         {
             _currHash = 0;
-            _bucket = _table->_buckets[_currHash];
-            while(_currHash < _table->_numHashBuckets && _bucket == NULL)
+            do
             {
-                ++_currHash;
                 _bucket = _table->_buckets[_currHash];
-            }
+                if(_bucket != NULL)
+                {
+                    break;
+                }
+                ++_currHash;
+            } while(_currHash < _table->_numHashBuckets);
         }
 
         /**
