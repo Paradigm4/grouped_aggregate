@@ -51,9 +51,9 @@ Where
 The operator must be invoked with at least one aggregate and at least one group.
 
 Optional tuning settings:
-  input_sorted=<true/false>     :: a hint that the input array is sorted by groups, or that, generally, 
-                                   aggregate group values are likely repeated often. Defaults to true 
-                                   if aggregating by non-last dimension, false otherwise.
+  input_sorted=<1/0>            :: a hint that the input array is sorted by groups, or that, generally, 
+                                   aggregate group values are likely repeated often. Defaults to 1 (true) 
+                                   if aggregating by non-last dimension, 0 otherwise.
   max_table_size=MB             :: the amount of memory (in MB) that the operator's hash table structure
                                    may consume. Once the table exceeds this size, new aggregate groups 
                                    are placed into a spillover array. Defaults to the merge-sort-buffer 
