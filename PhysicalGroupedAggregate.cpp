@@ -32,11 +32,11 @@
 #include <system/Utils.h>
 #include <log4cxx/logger.h>
 #include <util/NetworkMessage.h>
+#include <util/Network.h>
 #include <array/RLE.h>
 #include <array/SortArray.h>
 
 #include "query/Operator.h"
-#include <array/SortArray.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -57,6 +57,8 @@ using grouped_aggregate::Settings;
 
 namespace grouped_aggregate
 {
+// Logger for operator. static to prevent visibility of variable outside of file
+//static log4cxx::LoggerPtr loggerP(log4cxx::Logger::getLogger("scidb.operators.grouped_aggregate.physical"));
 
 template <Settings::SchemaType SCHEMA_TYPE>
 class MergeWriter : public boost::noncopyable
@@ -391,10 +393,93 @@ public:
             sortingAttributeInfos[g+1].columnNo = g+1;
             sortingAttributeInfos[g+1].ascent = true;
         }
+
         SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, tcomp);
     }
+
+    bool shareHTstatistics(bool value, shared_ptr<Query>& query)
+    {
+        std::shared_ptr<SharedBuffer> buf(new MemoryBuffer(NULL, sizeof(bool)));
+        InstanceID myId = query->getInstanceID();
+        *((bool*) buf->getData()) = value;
+        for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        {
+            if(i != myId)
+            {
+                BufSend(i, buf, query);
+            }
+        }
+        for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        {
+            if(i != myId)
+            {
+                buf = BufReceive(i,query);
+                bool otherInstanceVal = *((bool*) buf->getData());
+                value = value && otherInstanceVal;
+            }
+        }
+        return value;
+    }
+
+    size_t pickSpilloverChunkSize(shared_ptr<Array> const& input, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
+      {
+         //This might transfer statistics between the instances and calculate mean/variance. Throw out bad variance.
+         //Chunk size needs to be distributed to all instances.
+
+	    size_t MINCHUNKB = 5 * 1024 * 1024;
+	    size_t OPTCHUNKB = 8 * 1024 * 1024;
+	    size_t OPTCHUNKMB = 8;
+	    size_t MINCHUNKMB = 5;
+
+	    int maxMemoryUsage = Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER);
+
+        //the chunk size of the spill-over array. Defaults to 100,000.
+        // Should be smaller if there are are many of group-by attributes or aggregates.
+        //The point to picking the spill over chunk size is that (numaggs + groupSize) number of chunks are opened at once.
+    	// If there are 16 instances running on a server and 24 groups and aggregates, 16 * ((12 + 12) * sizeOfChunks) = 16 * 24* 8MB  = 3 GB of RAM per server.
+        // Along with the chunks being opened, the hash table is also stored in memory.
+
+    	//gather statistics to send to the instance that compiles all of the data
+    	size_t groupSize = settings.getGroupSize();
+    	size_t numAggs   = settings.getNumAggs();
+        size_t sizeHash  = aht.usedBytes();
+		size_t maxTableSize = settings.getMaxTableSize();
+		size_t const numInstances = query->getInstancesCount();
+
+		//MIGHT NOT DO THE BELOW FOR LOCAL
+        //if aggregating instance receive the data, put it together, then send it out.
+        //else send the instance data then wait to receive the compiled statistics.
+
+        //return the compiled statistics.
+        double sizeLeft = (double)maxMemoryUsage -(double) sizeHash; //size leftover in bytes
+        double numAtts = (1.0 + (double)numAggs + (double)groupSize); //1 is for the hash attribute. casted to double calcs
+        double selectedChunkMB = MINCHUNKMB;
+
+        /*
+        Maximum likelihood estimates for {\displaystyle \xi } \xi , {\displaystyle \omega } \omega , and
+		{\displaystyle \alpha } \alpha  can be computed numerically, but no closed-form expression for the
+		estimates is available unless {\displaystyle \alpha =0} \alpha =0. If a closed-form expression is needed,
+		the method of moments can be applied to estimate {\displaystyle \alpha } \alpha  from the sample skew,
+		by inverting the skewness equation
+        */
+
+		for(unsigned int ii = OPTCHUNKMB; ii <= MINCHUNKMB; ii--)
+		{
+			if(sizeLeft >= ii*numAtts)
+			{
+                selectedChunkMB = ii;
+				break;
+			}
+
+		}
+
+		double avgBytesPerAttribute = (double)sizeHash/numAtts; //1 is for the hash attribute
+		size_t selectedChunk = avgBytesPerAttribute * selectedChunkMB * 1024 *1024;
+        LOG4CXX_DEBUG(logger,"sizeHash:" << sizeHash<< "numAggs:" << numAggs << " selectedChunk for the spill over chunk size: "<< selectedChunk);
+        return selectedChunk;
+      }
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
@@ -407,6 +492,8 @@ public:
         vector<int64_t> const& groupIds = settings.getGroupIds();
         vector<Value> coords(groupSize);
         vector<Value const*> group(groupSize, NULL);
+
+        //set array iterators to point to coord location if an attribute.
         for(size_t g=0; g<groupSize; ++g)
         {
             if(!settings.isGroupOnAttribute(g))
@@ -418,6 +505,7 @@ public:
                 gaiters[g] = inputArray->getConstIterator( settings.getGroupIds()[g] );
             }
         }
+        //JR: don't know what this does? If null get to last attribute?
         if(gaiters[0].get() == 0)
         {   //TODO: also covers the case when the user wants to group by dimensions only
             gaiters[0] = inputArray->getConstIterator(inputArray->getArrayDesc().getAttributes().size()-1);
@@ -537,6 +625,15 @@ public:
             iaiters[a].reset();
         }
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
+
+        //TODO: pick the spill over chunk size here. stubbed below.
+        //There is a chunk open from each of the groups and attributes. Estimating the size of each of the chunks for the whole
+        //cluster allows memory to not increase beyond what is available.
+        //each instance opens #chunks = #groups + # attributes
+        //#instances per server * #average memory usage per chunk(can factor in max for large estimate) = total memory usage per server.
+
+        size_t  sortChunkSize =  pickSpilloverChunkSize(arr, aht, settings, query);
+
         arr = flatSort(arr, query, settings);
         aht.logStuff();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
@@ -578,6 +675,7 @@ public:
                 {
                     mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getStateVector());
                     ahtIter.next();
+                    //JR:Should there be a break here?
                 }
                 if(settings.inputSorted())
                 {
