@@ -475,10 +475,11 @@ public:
 
 		}
 
-		double avgBytesPerAttribute = (double)sizeHash/numAtts; //1 is for the hash attribute
+		size_t avgBytesPerAttribute = aht.avgBytesPerEntry(); //
 		size_t selectedChunk = avgBytesPerAttribute * selectedChunkMB * 1024 *1024;
-        LOG4CXX_DEBUG(logger,"sizeHash:" << sizeHash<< "numAggs:" << numAggs << " selectedChunk for the spill over chunk size: "<< selectedChunk);
-        return selectedChunk;
+		LOG4CXX_DEBUG(logger,"sizeHash=" << sizeHash<< " ,numAggs=" << numAggs << " ,selectedChunk= "<< selectedChunk);
+		LOG4CXX_DEBUG(logger,"avgBytesPerEntry="<< aht.avgBytesPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize());
+		return selectedChunk;
       }
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)

@@ -166,7 +166,11 @@ private:
             memcpy(ch, group[i]->data(), group[i]->size());
             ch += group[i]->size();
         }
-        return murmur3_32(&buf[0], totalSize);
+        //_totalGroupSize += totalSize;
+        //_numGroupsHashed =+ 1;
+        //_maxGroupSize = _maxGroupSize < totalSize ? totalSize :_maxGroupSize;
+
+         return murmur3_32(&buf[0], totalSize);
     }
 
     struct HashTableEntry
@@ -190,13 +194,20 @@ private:
     ssize_t                                  _largeValueMemory;
     size_t                                   _numHashes;
     size_t                                   _numGroups;
+    //statistics for picking chunk sizes
+    size_t                                   _numGroupsHashed;
+    size_t                                   _totalGroupSize;
+    size_t                                   _numStateElem;
+    size_t                                   _totalStateSize;
 
     void accumulateStates(Value* states, std::vector<Value const*> const& input)
     {
        size_t initialMem = 0;
        for(size_t i =0; i<_numAggs; ++i)
        {
-           if(states[i].isLarge())
+           _totalStateSize   += states[i].size();
+           _numStateElem += 1;
+    	   if(states[i].isLarge())
            {
                initialMem += states[i].size();
            }
@@ -255,7 +266,11 @@ public:
         _lastState(NULL),
         _largeValueMemory(0),
         _numHashes(0),
-        _numGroups(0)
+        _numGroups(0),
+        _totalGroupSize(0),
+        _numGroupsHashed(0),
+		_totalStateSize(0),
+		_numStateElem(0)
     {}
 
     void insert(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
@@ -342,6 +357,26 @@ public:
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION)<<"inconsistent state size overflow";
         }
         return _arena->allocated() + _largeValueMemory;
+    }
+    size_t totalStateSize() const
+    {
+       return _totalStateSize;
+    }
+    size_t numStateElem() const
+    {
+    	return _numStateElem;
+    }
+    size_t totalGroupSize() const
+    {
+    	return _totalGroupSize;
+    }
+    size_t numGroupsHashed() const
+    {
+       return _numGroupsHashed;
+    }
+    size_t avgBytesPerEntry() const
+    {
+       return _totalStateSize/_numStateElem + _totalGroupSize/_numGroupsHashed;
     }
 
     class const_iterator
