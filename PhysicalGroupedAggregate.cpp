@@ -423,7 +423,7 @@ public:
         return value;
     }
 
-    size_t pickSpilloverChunkSize(shared_ptr<Array> const& input, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
+    size_t pickSpilloverChunkSize(shared_ptr<Array> const& input,size_t overflowcount, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
       {
          //This might transfer statistics between the instances and calculate mean/variance. Throw out bad variance.
          //Chunk size needs to be distributed to all instances.
@@ -432,28 +432,25 @@ public:
 	    size_t OPTCHUNKB = 8 * 1024 * 1024;
 	    size_t OPTCHUNKMB = 8;
 	    size_t MINCHUNKMB = 5;
-
-	    int maxMemoryUsage = Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER);
+	    size_t maxMemoryUsage = settings.getMaxMemorySize();
 
         //the chunk size of the spill-over array. Defaults to 100,000.
         // Should be smaller if there are are many of group-by attributes or aggregates.
         //The point to picking the spill over chunk size is that (numaggs + groupSize) number of chunks are opened at once.
     	// If there are 16 instances running on a server and 24 groups and aggregates, 16 * ((12 + 12) * sizeOfChunks) = 16 * 24* 8MB  = 3 GB of RAM per server.
         // Along with the chunks being opened, the hash table is also stored in memory.
-
     	//gather statistics to send to the instance that compiles all of the data
     	size_t groupSize = settings.getGroupSize();
     	size_t numAggs   = settings.getNumAggs();
         size_t sizeHash  = aht.usedBytes();
 		size_t maxTableSize = settings.getMaxTableSize();
 		size_t const numInstances = query->getInstancesCount();
-
 		//MIGHT NOT DO THE BELOW FOR LOCAL
         //if aggregating instance receive the data, put it together, then send it out.
         //else send the instance data then wait to receive the compiled statistics.
 
         //return the compiled statistics.
-        double sizeLeft = (double)maxMemoryUsage -(double) sizeHash; //size leftover in bytes
+        double sizeLeft = ((double)maxMemoryUsage -(double) sizeHash)/1024/1024; //size leftover in bytes
         double numAtts = (1.0 + (double)numAggs + (double)groupSize); //1 is for the hash attribute. casted to double calcs
         double selectedChunkMB = MINCHUNKMB;
 
@@ -464,8 +461,7 @@ public:
 		the method of moments can be applied to estimate {\displaystyle \alpha } \alpha  from the sample skew,
 		by inverting the skewness equation
         */
-
-		for(unsigned int ii = OPTCHUNKMB; ii <= MINCHUNKMB; ii--)
+		for(unsigned int ii = OPTCHUNKMB; ii >= MINCHUNKMB; ii--)
 		{
 			if(sizeLeft >= ii*numAtts)
 			{
@@ -474,11 +470,11 @@ public:
 			}
 
 		}
-
-		size_t avgBytesPerAttribute = aht.avgBytesPerEntry(); //
-		size_t selectedChunk = avgBytesPerAttribute * selectedChunkMB * 1024 *1024;
-		LOG4CXX_DEBUG(logger,"sizeHash=" << sizeHash<< " ,numAggs=" << numAggs << " ,selectedChunk= "<< selectedChunk);
-		LOG4CXX_DEBUG(logger,"avgBytesPerEntry="<< aht.avgBytesPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize());
+		size_t avgBPerCell = aht.avgBPerEntry() + 32*(overflowcount/(aht.numGroupsHashed()+aht.numStateElem()+overflowcount)); //32 bit hash
+		LOG4CXX_DEBUG(logger,"FOO Config 7");
+		size_t selectedChunk = (selectedChunkMB * 1024 *1024)/avgBPerCell;
+		LOG4CXX_DEBUG(logger,"maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk);
+		LOG4CXX_DEBUG(logger,"avgBPerEntry="<< aht.avgBPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize());
 		return selectedChunk;
       }
 
@@ -522,6 +518,7 @@ public:
         size_t const maxTableSize = settings.getMaxTableSize();
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
         MergeWriter<Settings::MERGE> flatCondensed(settings, query);
+        size_t overflowInserts = 0;
         while(!gaiters[0]->end())
         {
             for(size_t g=0; g<groupSize; ++g)
@@ -577,7 +574,8 @@ public:
                 {
                     if(!aht.contains(group, hash))
                     {
-                        if(settings.inputSorted())
+                        overflowInserts+=1;
+                    	if(settings.inputSorted())
                         {
                             flatCondensed.writeValue(hash, group, input);
                         }
@@ -627,13 +625,14 @@ public:
         }
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
 
+        LOG4CXX_DEBUG(logger,"Begin Chunk code - TESTFOO1");
         //TODO: pick the spill over chunk size here. stubbed below.
         //There is a chunk open from each of the groups and attributes. Estimating the size of each of the chunks for the whole
         //cluster allows memory to not increase beyond what is available.
         //each instance opens #chunks = #groups + # attributes
         //#instances per server * #average memory usage per chunk(can factor in max for large estimate) = total memory usage per server.
 
-        size_t  sortChunkSize =  pickSpilloverChunkSize(arr, aht, settings, query);
+        size_t  sortChunkSize =  pickSpilloverChunkSize(arr,overflowInserts, aht, settings, query);
 
         arr = flatSort(arr, query, settings);
         aht.logStuff();

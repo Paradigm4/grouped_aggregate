@@ -100,7 +100,7 @@ private:
     // MurmurHash3 was written by Austin Appleby, and is placed in the public
     // domain. The author hereby disclaims copyright to this source code.
     #define ROT32(x, y) ((x << y) | (x >> (32 - y))) // avoid effort
-    static uint32_t murmur3_32(const char *key, uint32_t len, uint32_t const seed = 0x5C1DB123)
+    uint32_t murmur3_32(const char *key, uint32_t len, uint32_t const seed = 0x5C1DB123)
     {
         static const uint32_t c1 = 0xcc9e2d51;
         static const uint32_t c2 = 0x1b873593;
@@ -148,7 +148,7 @@ private:
     //End of MurmurHash3 Implementation
     //-----------------------------------------------------------------------------
 
-    static uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+    uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
     {
         size_t totalSize = 0;
         for(size_t i =0; i<groupSize; ++i)
@@ -166,10 +166,9 @@ private:
             memcpy(ch, group[i]->data(), group[i]->size());
             ch += group[i]->size();
         }
-        //_totalGroupSize += totalSize;
-        //_numGroupsHashed =+ 1;
+        _totalGroupSize += totalSize;
+        _numGroupsHashed += 1;
         //_maxGroupSize = _maxGroupSize < totalSize ? totalSize :_maxGroupSize;
-
          return murmur3_32(&buf[0], totalSize);
     }
 
@@ -277,7 +276,8 @@ public:
     {
         if(_lastGroup != NULL && _settings.groupEqual(_lastGroup, group))
         {
-            accumulateStates(_lastState, input);
+        	_numGroupsHashed += 1;
+			accumulateStates(_lastState, input);
             return;
         }
         uint32_t hash = hashGroup(group, _groupSize) % _numHashBuckets;
@@ -328,7 +328,7 @@ public:
      * @param[out] hash computes the hash of group as a side-effect
      * @return true if the table contains the group, false otherwise
      */
-    bool contains(std::vector<Value const*> const& group, uint32_t& hash) const
+    bool contains(std::vector<Value const*> const& group, uint32_t& hash)
     {
         hash = hashGroup(group, _groupSize) % _numHashBuckets;
         HashTableEntry const* bucket = _buckets[hash];
@@ -374,9 +374,10 @@ public:
     {
        return _numGroupsHashed;
     }
-    size_t avgBytesPerEntry() const
+    size_t avgBPerEntry() const
     {
-       return _totalStateSize/_numStateElem + _totalGroupSize/_numGroupsHashed;
+       double rtnval = (double)_totalStateSize/(double)_numStateElem + (double)_totalGroupSize/(double)_numGroupsHashed;
+       return rtnval;
     }
 
     class const_iterator

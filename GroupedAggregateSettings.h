@@ -97,6 +97,7 @@ class Settings
 private:
     size_t _groupSize;
     size_t _numAggs;
+    size_t _maxMemorySize;
     size_t _maxTableSize;
     bool   _maxTableSizeSet;
     size_t _spilloverChunkSize;
@@ -130,7 +131,8 @@ public:
              shared_ptr<Query>& query):
         _groupSize              (0),
         _numAggs                (0),
-        _maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER)),
+        _maxMemorySize          ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER)),
+		_maxTableSize           ( Config::getInstance()->getOption<int>(CONFIG_MERGE_SORT_BUFFER)),
         _maxTableSizeSet        ( false ),
         _spilloverChunkSize     ( 100000 ),
         _spilloverChunkSizeSet  ( false ),
@@ -392,6 +394,11 @@ public:
     AggregatePtr cloneAggregate() const
     {
         return _aggregates[0]->clone();
+    }
+
+    size_t getMaxMemorySize() const
+    {
+        return _maxMemorySize * 1024 * 1024;
     }
 
     size_t getMaxTableSize() const
