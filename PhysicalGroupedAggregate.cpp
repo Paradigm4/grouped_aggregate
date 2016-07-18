@@ -399,29 +399,52 @@ public:
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, tcomp);
     }
-
-    bool shareHTstatistics(bool value, shared_ptr<Query>& query)
+    size_t calcGlobalMean(double value, shared_ptr<Query>& query, InstanceID aggrIns, double selectedChunkMB)
     {
-        std::shared_ptr<SharedBuffer> buf(new MemoryBuffer(NULL, sizeof(bool)));
+        double globalMean = value;
+    	size_t selectedChunk;
+        std::shared_ptr<SharedBuffer> buf(new MemoryBuffer(NULL, sizeof(double)));
+        std::shared_ptr<SharedBuffer> sbuf(new MemoryBuffer(NULL, sizeof(size_t)));
         InstanceID myId = query->getInstanceID();
-        *((bool*) buf->getData()) = value;
-        for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        *((double*) buf->getData()) = value;
+        if(aggrIns != myId)
         {
-            if(i != myId)
-            {
-                BufSend(i, buf, query);
-            }
+        	BufSend(aggrIns, buf, query);
         }
-        for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        if(myId == aggrIns)
         {
-            if(i != myId)
-            {
-                buf = BufReceive(i,query);
-                bool otherInstanceVal = *((bool*) buf->getData());
-                value = value && otherInstanceVal;
-            }
+        	for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        	{
+        		if(i != myId )
+        		{
+        			buf = BufReceive(i,query);
+        			double otherInstanceVal = *((double*) buf->getData());
+        			globalMean += otherInstanceVal;
+        		}
+        	}
+        	//total global statistics and select the chunk size
+        	//selectedChunkMB is decided outside of this function and is a function of how much
+        	//memory we think that we still have available on the server.
+        	globalMean = globalMean/(double)query->getInstancesCount();
+        	double avgBPerCell = globalMean;
+        	LOG4CXX_DEBUG(logger,"FOO Global TRADE selectedChunkMB="<< selectedChunkMB << ", avgBperCell=" << avgBPerCell )
+        	selectedChunk = (selectedChunkMB * 1024 *1024)/avgBPerCell;
+        	std::shared_ptr<SharedBuffer> sbuf(new MemoryBuffer(NULL, sizeof(size_t)));
+        	*((size_t*) sbuf->getData()) = selectedChunk;
+        	for(InstanceID i=0; i<query->getInstancesCount(); i++)
+        	{
+        		if(i != myId )
+        		{
+        			BufSend(i, buf, query);
+        		}
+        	}
         }
-        return value;
+        else
+        {
+        	sbuf = BufReceive(aggrIns,query);
+        	selectedChunk = *((size_t*) sbuf->getData());
+        }
+        return selectedChunk;
     }
 
     size_t pickSpilloverChunkSize(shared_ptr<Array> const& input,size_t overflowcount, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
@@ -478,12 +501,76 @@ public:
     	size_t selectedChunk = (selectedChunkMB * 1024 *1024)/avgBPerCell;
     	if(DEBUG)
     	{
-    		LOG4CXX_DEBUG(logger,"FOO Config 7 " << "maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk);
+    		LOG4CXX_DEBUG(logger,"FOO Local " << "maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk);
     		LOG4CXX_DEBUG(logger,"avgBPerEntry="<< aht.avgBPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize()<<", overflowcount="<< overflowcount);
     	}
     	return selectedChunk;
     }
+    size_t pickMergeChunkSize(shared_ptr<Array> const& input,size_t overflowcount, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
+    {
+    	//This is a code path for picking chunksizes when the data is dense, but is going to be globally merged. This will require global statistics
+    	// to be collected and merged from the instances.
+    	//the chunk size of the merge chunk array. Defaults to 100,000.
+    	// Should be smaller if there are are many of group-by attributes or aggregates.
+    	//The point to picking the merge chunk size is that (numaggs + groupSize) number of chunks are opened at once.
+    	// If there are 16 instances running on a server and 24 groups and aggregates, 16 * ((12 + 12) * sizeOfChunks) = 16 * 24* 8MB  = 3 GB of RAM per server.
+    	// Along with the chunks being opened, the hash table is also stored in memory.
+    	//gather statistics to send to the instance that compiles all of the data
+    	bool DEBUG = true;
+    	size_t MINCHUNKB = 5 * 1024 * 1024;
+    	size_t OPTCHUNKB = 8 * 1024 * 1024;
+    	size_t OPTCHUNKMB = 8;
+    	size_t MINCHUNKMB = 5;
+    	size_t maxMemoryUsage = settings.getMaxMemorySize();
 
+    	size_t groupSize = settings.getGroupSize();
+    	size_t numAggs   = settings.getNumAggs();
+    	size_t sizeHash  = aht.usedBytes();
+    	size_t maxTableSize = settings.getMaxTableSize();
+    	size_t const numInstances = query->getInstancesCount();
+    	//if aggregating instance receive the data, put it together, then send it out.
+    	//else send the instance data then wait to receive the compiled statistics.
+
+    	//return the compiled statistics.
+    	double sizeLeft = ((double)maxMemoryUsage - (double) sizeHash)/1024/1024; //size leftover in bytes
+    	double numAtts = (1.0 + (double)numAggs + (double)groupSize); //1 is for the hash attribute. casted to double calcs
+    	double selectedChunkMB = MINCHUNKMB;
+
+    	//This might transfer statistics between the instances and calculate mean/variance. Throw out bad variance.
+    	//Chunk size needs to be distributed to all instances.
+    	/*
+            Maximum likelihood estimates for {\displaystyle \xi } \xi , {\displaystyle \omega } \omega , and
+    		{\displaystyle \alpha } \alpha  can be computed numerically, but no closed-form expression for the
+    		estimates is available unless {\displaystyle \alpha =0} \alpha =0. If a closed-form expression is needed,
+    		the method of moments can be applied to estimate {\displaystyle \alpha } \alpha  from the sample skew,
+    		by inverting the skewness equation
+    	 */
+    	for(unsigned int ii = OPTCHUNKMB; ii >= MINCHUNKMB; ii--)
+    	{
+    		if(sizeLeft >= ii*numAtts)
+    		{
+    			selectedChunkMB = ii;
+    			break;
+    		}
+    	}
+        //local statistics should be gathered here and then shipped to the other instances to gather a global statistic.
+        //assume Normal distribution for now until we get more detailed.
+    	double localMean = ((double)aht.tableStateSize() + (double)aht.tableGroupSize()/(double)aht.numGroups() + 32.0) / numAtts;
+        //what is variance going to be used for downstream? Will it be useful? How about skew?
+    	//variance = sum(xi -xmean)^2/n-1
+    	//double localVariance =
+        //The dimension set for the merge array will be: dst_instance_id, src_instance_id, value_no [1,1, selectedChunkSize]
+    	//all instances ship their statistics to statistic aggregating instance and then wait for the global chunk size back.
+    	double selectedChunk = calcGlobalMean(localMean, query, settings.getAggrInstance(), selectedChunkMB);
+
+    	if(DEBUG)
+    	{
+    		LOG4CXX_DEBUG(logger,"FOO Global " << "maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk << ", localMean=" << localMean);
+    		LOG4CXX_DEBUG(logger,"tableStateSize="<< aht.tableStateSize() << " ,tableGroupSize="<< aht.tableGroupSize() << " ,numberOfHashEntry=" << aht.numberOfHashEntry()<<", numAtts="<< numAtts);
+    		LOG4CXX_DEBUG(logger,"selectedChunk="<< selectedChunk );
+    	}
+    	return selectedChunk;
+    }
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
         ArenaPtr operatorArena = this->getArena();
@@ -580,7 +667,7 @@ public:
                 {
                     if(!aht.contains(group, hash))
                     {
-                        overflowInserts+=1;
+                        overflowInserts+=1;//count the number of overflow entries.
                     	if(settings.inputSorted())
                         {
                             flatCondensed.writeValue(hash, group, input);
@@ -651,6 +738,11 @@ public:
         {
             iaiters[a] = arr->getConstIterator(a + groupSize + 1);
         }
+        /* Pick the merge chunk size here. The hashing has been completed at this point and the spill over array filled.
+         *
+         */
+        size_t  mergeChunkSize =  pickMergeChunkSize(arr, overflowInserts, aht, settings, query);
+
         shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
         MergeWriter<Settings::MERGE> mergeWriter(settings, query);
@@ -681,7 +773,6 @@ public:
                 {
                     mergeWriter.writeState(ahtIter.getCurrentHash(), ahtIter.getGroupVector(), ahtIter.getStateVector());
                     ahtIter.next();
-                    //JR:Should there be a break here?
                 }
                 if(settings.inputSorted())
                 {

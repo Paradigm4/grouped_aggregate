@@ -111,6 +111,7 @@ private:
     bool   _inputSortedSet;
     size_t _numHashBuckets;
     bool   _numHashBucketsSet;
+    InstanceID _aggrInstance;
     vector<int64_t> _groupIds;
     vector<bool>    _isGroupOnAttribute;
     vector<string> _groupNames;
@@ -144,7 +145,8 @@ public:
         _inputSorted            ( false ),
         _inputSortedSet         ( false ),
         _numHashBuckets         ( 1048573 ),
-        _numHashBucketsSet      ( false )
+        _numHashBucketsSet      ( false ),
+		_aggrInstance           (0)
     {
         bool autoInputSorted = true;
         for(size_t i = 0; i<operatorParameters.size(); ++i)
@@ -444,6 +446,11 @@ public:
     size_t getNumAggs() const
     {
         return _numAggs;
+    }
+
+    InstanceID getAggrInstance() const
+    {
+    	return _aggrInstance;
     }
 
     enum SchemaType

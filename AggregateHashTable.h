@@ -201,28 +201,36 @@ private:
     size_t                                   _totalGroupSize;
     size_t                                   _numStateElem;
     size_t                                   _totalStateSize;
-
+    size_t                                   _tableGroupSize;//size of all of the unique groups stored in the table
+    size_t                                   _tableStateSize;//size of all of the aggregated states in the table
     void accumulateStates(Value* states, std::vector<Value const*> const& input)
     {
        size_t initialMem = 0;
+       size_t initialAll = 0;
+       _tableStateSize = 0;
        for(size_t i =0; i<_numAggs; ++i)
        {
-           _totalStateSize   += states[i].size();
+           initialAll += states[i].size();
+
            _numStateElem += 1;
     	   if(states[i].isLarge())
            {
                initialMem += states[i].size();
            }
        }
+       _totalStateSize   += initialAll;
        _settings.aggAccumulate(states, input);
        size_t finalMem = 0;
+       size_t finalAll = 0;
        for(size_t i =0; i<_numAggs; ++i)
        {
-          if(states[i].isLarge())
+    	  finalAll += states[i].size();
+    	  if(states[i].isLarge())
           {
               finalMem += states[i].size();
           }
        }
+       _tableStateSize += (finalAll - initialAll);
        _largeValueMemory += (finalMem - initialMem);
     }
 
@@ -232,6 +240,7 @@ private:
         for(size_t i=0; i<_groupSize; ++i)
         {
             Value const& groupItem = *(group[i]);
+            _tableGroupSize += groupItem.size();
             if(groupItem.isLarge())
             {
                 _largeValueMemory += groupItem.size();
@@ -272,7 +281,9 @@ public:
         _totalGroupSize(0),
         _numGroupsHashed(0),
 		_totalStateSize(0),
-		_numStateElem(0)
+		_numStateElem(0),
+		_tableGroupSize(0),
+		_tableStateSize(0)
     {}
 
     void insert(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
@@ -283,7 +294,7 @@ public:
 			accumulateStates(_lastState, input);
             return;
         }
-        uint32_t hash = hashGroup(group, _groupSize, true) % _numHashBuckets;
+        uint32_t hash = (group, _groupSize, true) % _numHashBuckets;
         bool newGroup = true;
         bool newHash = true;
         HashTableEntry** entry = &(_buckets[hash]);
@@ -373,9 +384,25 @@ public:
     {
     	return _totalGroupSize;
     }
+    size_t tableStateSize() const
+    {
+    	return _tableStateSize;
+    }
+    size_t tableGroupSize() const
+    {
+    	return _tableGroupSize;
+    }
+    size_t numberOfHashEntry() const
+    {
+    	return _numHashes;
+    }
     size_t numGroupsHashed() const
     {
        return _numGroupsHashed;
+    }
+    size_t numGroups() const
+    {
+       return _numGroups;
     }
     size_t avgBPerEntry() const
     {
