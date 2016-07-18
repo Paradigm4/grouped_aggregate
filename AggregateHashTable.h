@@ -148,7 +148,7 @@ private:
     //End of MurmurHash3 Implementation
     //-----------------------------------------------------------------------------
 
-    uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+    uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize, bool stats)
     {
         size_t totalSize = 0;
         for(size_t i =0; i<groupSize; ++i)
@@ -166,10 +166,13 @@ private:
             memcpy(ch, group[i]->data(), group[i]->size());
             ch += group[i]->size();
         }
-        _totalGroupSize += totalSize;
-        _numGroupsHashed += 1;
-        //_maxGroupSize = _maxGroupSize < totalSize ? totalSize :_maxGroupSize;
-         return murmur3_32(&buf[0], totalSize);
+        if(stats)
+        {
+            _totalGroupSize += totalSize;
+            _numGroupsHashed += 1;
+            //_maxGroupSize = _maxGroupSize < totalSize ? totalSize :_maxGroupSize;
+        }
+        return murmur3_32(&buf[0], totalSize);
     }
 
     struct HashTableEntry
@@ -280,7 +283,7 @@ public:
 			accumulateStates(_lastState, input);
             return;
         }
-        uint32_t hash = hashGroup(group, _groupSize) % _numHashBuckets;
+        uint32_t hash = hashGroup(group, _groupSize, true) % _numHashBuckets;
         bool newGroup = true;
         bool newHash = true;
         HashTableEntry** entry = &(_buckets[hash]);
@@ -330,7 +333,7 @@ public:
      */
     bool contains(std::vector<Value const*> const& group, uint32_t& hash)
     {
-        hash = hashGroup(group, _groupSize) % _numHashBuckets;
+        hash = hashGroup(group, _groupSize, false) % _numHashBuckets;
         HashTableEntry const* bucket = _buckets[hash];
         while(bucket != NULL)
         {

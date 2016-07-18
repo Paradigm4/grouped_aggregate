@@ -424,59 +424,64 @@ public:
     }
 
     size_t pickSpilloverChunkSize(shared_ptr<Array> const& input,size_t overflowcount, AggregateHashTable const& aht, Settings& settings, shared_ptr<Query>& query)
-      {
-         //This might transfer statistics between the instances and calculate mean/variance. Throw out bad variance.
-         //Chunk size needs to be distributed to all instances.
+    {
 
-	    size_t MINCHUNKB = 5 * 1024 * 1024;
-	    size_t OPTCHUNKB = 8 * 1024 * 1024;
-	    size_t OPTCHUNKMB = 8;
-	    size_t MINCHUNKMB = 5;
-	    size_t maxMemoryUsage = settings.getMaxMemorySize();
-
-        //the chunk size of the spill-over array. Defaults to 100,000.
-        // Should be smaller if there are are many of group-by attributes or aggregates.
-        //The point to picking the spill over chunk size is that (numaggs + groupSize) number of chunks are opened at once.
+    	//This is a code path for picking chunksizes when the data is local and dense, a simple case.
+    	//the chunk size of the spill-over array. Defaults to 100,000.
+    	// Should be smaller if there are are many of group-by attributes or aggregates.
+    	//The point to picking the spill over chunk size is that (numaggs + groupSize) number of chunks are opened at once.
     	// If there are 16 instances running on a server and 24 groups and aggregates, 16 * ((12 + 12) * sizeOfChunks) = 16 * 24* 8MB  = 3 GB of RAM per server.
-        // Along with the chunks being opened, the hash table is also stored in memory.
+    	// Along with the chunks being opened, the hash table is also stored in memory.
     	//gather statistics to send to the instance that compiles all of the data
+    	bool DEBUG = true;
+    	size_t MINCHUNKB = 5 * 1024 * 1024;
+    	size_t OPTCHUNKB = 8 * 1024 * 1024;
+    	size_t OPTCHUNKMB = 8;
+    	size_t MINCHUNKMB = 5;
+    	size_t maxMemoryUsage = settings.getMaxMemorySize();
+
     	size_t groupSize = settings.getGroupSize();
     	size_t numAggs   = settings.getNumAggs();
-        size_t sizeHash  = aht.usedBytes();
-		size_t maxTableSize = settings.getMaxTableSize();
-		size_t const numInstances = query->getInstancesCount();
-		//MIGHT NOT DO THE BELOW FOR LOCAL
-        //if aggregating instance receive the data, put it together, then send it out.
-        //else send the instance data then wait to receive the compiled statistics.
+    	size_t sizeHash  = aht.usedBytes();
+    	size_t maxTableSize = settings.getMaxTableSize();
+    	size_t const numInstances = query->getInstancesCount();
+    	//MIGHT NOT DO THE BELOW FOR LOCAL
+    	//if aggregating instance receive the data, put it together, then send it out.
+    	//else send the instance data then wait to receive the compiled statistics.
 
-        //return the compiled statistics.
-        double sizeLeft = ((double)maxMemoryUsage -(double) sizeHash)/1024/1024; //size leftover in bytes
-        double numAtts = (1.0 + (double)numAggs + (double)groupSize); //1 is for the hash attribute. casted to double calcs
-        double selectedChunkMB = MINCHUNKMB;
+    	//return the compiled statistics.
+    	double sizeLeft = ((double)maxMemoryUsage -(double) sizeHash)/1024/1024; //size leftover in bytes
+    	double numAtts = (1.0 + (double)numAggs + (double)groupSize); //1 is for the hash attribute. casted to double calcs
+    	double selectedChunkMB = MINCHUNKMB;
 
-        /*
+    	//This might transfer statistics between the instances and calculate mean/variance. Throw out bad variance.
+    	//Chunk size needs to be distributed to all instances.
+    	/*
         Maximum likelihood estimates for {\displaystyle \xi } \xi , {\displaystyle \omega } \omega , and
 		{\displaystyle \alpha } \alpha  can be computed numerically, but no closed-form expression for the
 		estimates is available unless {\displaystyle \alpha =0} \alpha =0. If a closed-form expression is needed,
 		the method of moments can be applied to estimate {\displaystyle \alpha } \alpha  from the sample skew,
 		by inverting the skewness equation
-        */
-		for(unsigned int ii = OPTCHUNKMB; ii >= MINCHUNKMB; ii--)
-		{
-			if(sizeLeft >= ii*numAtts)
-			{
-                selectedChunkMB = ii;
-				break;
-			}
+    	 */
+    	for(unsigned int ii = OPTCHUNKMB; ii >= MINCHUNKMB; ii--)
+    	{
+    		if(sizeLeft >= ii*numAtts)
+    		{
+    			selectedChunkMB = ii;
+    			break;
+    		}
 
-		}
-		size_t avgBPerCell = aht.avgBPerEntry() + 32*(overflowcount/(aht.numGroupsHashed()+aht.numStateElem()+overflowcount)); //32 bit hash
-		LOG4CXX_DEBUG(logger,"FOO Config 7");
-		size_t selectedChunk = (selectedChunkMB * 1024 *1024)/avgBPerCell;
-		LOG4CXX_DEBUG(logger,"maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk);
-		LOG4CXX_DEBUG(logger,"avgBPerEntry="<< aht.avgBPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize());
-		return selectedChunk;
-      }
+    	}
+    	size_t hashvalCont = 32*(overflowcount/(aht.numGroupsHashed()+aht.numStateElem()+overflowcount));
+    	size_t avgBPerCell = aht.avgBPerEntry() + hashvalCont; //32 byte hash
+    	size_t selectedChunk = (selectedChunkMB * 1024 *1024)/avgBPerCell;
+    	if(DEBUG)
+    	{
+    		LOG4CXX_DEBUG(logger,"FOO Config 7 " << "maxMemoryUsage="<< maxMemoryUsage <<", sizeLeft=" << sizeLeft <<", sizeHash=" << sizeHash<< " ,numAggs=" << numAggs <<",groupSize=" << groupSize << ", selectedChunkMB="<< selectedChunkMB << " ,selectedChunk= "<< selectedChunk);
+    		LOG4CXX_DEBUG(logger,"avgBPerEntry="<< aht.avgBPerEntry() <<", numGroupsHashed=" << aht.numGroupsHashed() << ", totalGroupSize=" << aht.totalGroupSize() << " ,numStateElem="<< aht.numStateElem() << " ,totalStateSize=" << aht.totalStateSize()<<", overflowcount="<< overflowcount);
+    	}
+    	return selectedChunk;
+    }
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
