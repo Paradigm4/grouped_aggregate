@@ -148,25 +148,24 @@ private:
     //End of MurmurHash3 Implementation
     //-----------------------------------------------------------------------------
 
-    static uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize)
+    uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize) const
     {
         size_t totalSize = 0;
         for(size_t i =0; i<groupSize; ++i)
         {
             totalSize += group[i]->size();
         }
-        static std::vector<char> buf (64);
-        if(buf.size() < totalSize)
+        if(_hashBuf.size() < totalSize)
         {
-            buf.resize(totalSize);
+            _hashBuf.resize(totalSize);
         }
-        char* ch = &buf[0];
+        char* ch = &_hashBuf[0];
         for(size_t i =0; i<groupSize; ++i)
         {
             memcpy(ch, group[i]->data(), group[i]->size());
             ch += group[i]->size();
         }
-        return murmur3_32(&buf[0], totalSize);
+        return murmur3_32(&_hashBuf[0], totalSize);
     }
 
     struct HashTableEntry
@@ -190,6 +189,7 @@ private:
     ssize_t                                  _largeValueMemory;
     size_t                                   _numHashes;
     size_t                                   _numGroups;
+    mutable vector<char>                     _hashBuf;
 
     void accumulateStates(Value* states, std::vector<Value const*> const& input)
     {
@@ -255,7 +255,8 @@ public:
         _lastState(NULL),
         _largeValueMemory(0),
         _numHashes(0),
-        _numGroups(0)
+        _numGroups(0),
+        _hashBuf(64)
     {}
 
     void insert(std::vector<Value const*> const& group, std::vector<Value const*> const& input)
