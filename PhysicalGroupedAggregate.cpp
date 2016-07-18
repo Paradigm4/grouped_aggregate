@@ -383,7 +383,7 @@ public:
         return RedistributeContext(createDistribution(psUndefined), _schema.getResidency() );
     }
 
-    shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
+    shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings, size_t spill)
     {
         SortingAttributeInfos sortingAttributeInfos(settings.getGroupSize() + 1);
         sortingAttributeInfos[0].columnNo = 0;
@@ -394,7 +394,8 @@ public:
             sortingAttributeInfos[g+1].ascent = true;
         }
 
-        SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
+
+        SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSizeSet() ? settings.getSpilloverChunkSize():spill );
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, tcomp);
     }
@@ -639,7 +640,7 @@ public:
 
         size_t  sortChunkSize =  pickSpilloverChunkSize(arr,overflowInserts, aht, settings, query);
 
-        arr = flatSort(arr, query, settings);
+        arr = flatSort(arr, query, settings, sortChunkSize);
         aht.logStuff();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
         for(size_t g = 0; g<groupSize; ++g)

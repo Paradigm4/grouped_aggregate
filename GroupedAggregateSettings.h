@@ -411,6 +411,11 @@ public:
         return _spilloverChunkSize;
     }
 
+    size_t getSpilloverChunkSizeSet() const
+    {
+        return _spilloverChunkSizeSet;
+    }
+
     size_t getMergeChunkSize() const
     {
         return _mergeChunkSize;
