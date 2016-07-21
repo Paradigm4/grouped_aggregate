@@ -32,12 +32,12 @@ CCFLAGS = -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
 INC = -I. -DPROJECT_ROOT="\"$(SCIDB)\"" -I"$(SCIDB_THIRDPARTY_PREFIX)/3rdparty/boost/include/" \
       -I"$(SCIDB)/include" -I./extern
 
-LIBS = -shared -Wl,-soname,libgrouped_aggregate.so -ldl -L. \
+LIBS = -shared -Wl,-soname,libbloom.so -ldl -L. \
        -L"$(SCIDB_THIRDPARTY_PREFIX)/3rdparty/boost/lib" -L"$(SCIDB)/lib" \
        -Wl,-rpath,$(SCIDB)/lib:$(RPATH)
 
-SRCS = LogicalGroupedAggregate.cpp \
-       PhysicalGroupedAggregate.cpp
+SRCS = LogicalBloom.cpp \
+       PhysicalBloom.cpp
 
 # Compiler settings for SciDB version >= 15.7
 ifneq ("$(wildcard /usr/bin/g++-4.9)","")
@@ -52,17 +52,18 @@ else
  endif
 endif
 
-all: libgrouped_aggregate.so
+all: libbloom.so
 
 clean:
+
 	rm -rf *.so *.o
 
-libgrouped_aggregate.so: $(SRCS) AggregateHashTable.h GroupedAggregateSettings.h 
+libbloom.so: $(SRCS) JoinHashTable.h BloomSettings.h 
 	@if test ! -d "$(SCIDB)"; then echo  "Error. Try:\n\nmake SCIDB=<PATH TO SCIDB INSTALL PATH>"; exit 1; fi
-	$(CXX) $(CCFLAGS) $(INC) -o LogicalGroupedAggregate.o -c LogicalGroupedAggregate.cpp
-	$(CXX) $(CCFLAGS) $(INC) -o PhysicalGroupedAggregate.o -c PhysicalGroupedAggregate.cpp
-	$(CXX) $(CCFLAGS) $(INC) -o libgrouped_aggregate.so plugin.cpp LogicalGroupedAggregate.o PhysicalGroupedAggregate.o $(LIBS)
-	@echo "Now copy libgrouped_aggregate.so to $(INSTALL_DIR) on all your SciDB nodes, and restart SciDB."
+	$(CXX) $(CCFLAGS) $(INC) -o LogicalBloom.o -c LogicalBloom.cpp
+	$(CXX) $(CCFLAGS) $(INC) -o PhysicalBloom.o -c PhysicalBloom.cpp
+	$(CXX) $(CCFLAGS) $(INC) -o libbloom.so plugin.cpp LogicalBloom.o PhysicalBloom.o $(LIBS)
+	@echo "Now copy libbloom.so to $(INSTALL_DIR) on all your SciDB nodes, and restart SciDB."
 
 test:
 	./test.sh
