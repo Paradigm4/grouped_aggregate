@@ -46,6 +46,7 @@
 
 #include "BloomUtilities.h"
 #include "BloomSettings.h"
+#include <sys/time.h>
 
 using namespace boost;
 using namespace std;
@@ -61,6 +62,17 @@ namespace bloom
 } //namespace bloom
 
 using namespace bloom;
+
+typedef unsigned long long timestamp_t;
+
+static timestamp_t get_timestamp ()
+{
+  struct timeval now;
+  gettimeofday (&now, NULL);
+  return  now.tv_usec + (timestamp_t)now.tv_sec * 1000000;
+}
+
+
 
 class PhysicalBloom : public PhysicalOperator
 {
@@ -115,76 +127,107 @@ public:
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
 
-    	//vector<ArrayDesc const*> inputSchemas;
-    	//inputSchemas.push_back(&(schemas[0]));
-    	//inputSchemas.push_back(&(schemas[1]));`
-    	//Settings settings(inputArrays[0]->getArrayDesc(), _parameters, false, query);
-        bloom::BloomFilter foofilter;
-
-
-        //bloom::BloomFilter foofilter;
-    	/*
-		 minBloomSize(1),
-		 maxBloomSize(std::numeric_limits<unsigned long long int>::max()),
-		 minNumHashes(1),
-		 maxNumHashes(std::numeric_limits<unsigned int>::max()),
-		 estimatedElementCount(100000),
-		 falsePosProb(1.0 / estimatedElementCount
-        */
-
+        OptimalBloom optbloom;
 
     	shared_ptr<Array>& input = inputArrays[0];
     	shared_ptr< Array> outArray;
     	shared_ptr<Array>& array = input;
     	std::shared_ptr<ConstArrayIterator> inputIterator = input->getConstIterator(1);
 
-    	foofilter.setMaxBloomSize(50000e6);
-        foofilter.setEstimatedElementCount(1000000000);
-    	foofilter.setFalsePosProb(.000001);
+    	std::vector<double> pstore;
 
-        foofilter.computeOptimalParameters();
+    	optbloom.setMaxBloomSize(50000e6);
+        optbloom.setEstimatedElementCount(10);
 
-    	foofilter.setFalsePosProb(.0001);
-    	foofilter.computeOptimalParameters();
+        optbloom.setFalsePosProb(.000001);
+        optbloom.computeOptimalParameters();
+        pstore.push_back(optbloom.getPRealized());
 
-    	foofilter.setFalsePosProb(.01);
-    	foofilter.computeOptimalParameters();
+		optbloom.setFalsePosProb(.0001);
+    	optbloom.computeOptimalParameters();
+    	optbloom.getPRealized();
+    	pstore.push_back(optbloom.getPRealized());
 
-    	foofilter.setFalsePosProb(.1);
-    	foofilter.computeOptimalParameters();
+    	optbloom.setFalsePosProb(.01);
+    	optbloom.computeOptimalParameters();
+    	pstore.push_back(optbloom.getPRealized());
 
-    	foofilter.setFalsePosProb(.5);
-    	foofilter.computeOptimalParameters();
+    	optbloom.setFalsePosProb(.1);
+    	optbloom.computeOptimalParameters();
+    	pstore.push_back(optbloom.getPRealized());
 
+    	optbloom.setFalsePosProb(0.5);
+    	optbloom.computeOptimalParameters();
+    	pstore.push_back(optbloom.getPRealized());
 
-        while(!inputIterator-> end())
+    	LOG4CXX_DEBUG(loggerP,"BLOOM computeOptimalParameters finished");
+    	bloom::BloomFilter *foofilter = new BloomFilter(optbloom);
+    	LOG4CXX_DEBUG(loggerP,"BLOOM filter allocated");
+        size_t bloomEntries = 0;
+        double addTime=0;
+    	while(!inputIterator-> end())
         	{
         		std::shared_ptr<ConstChunkIterator> inputChunkIterator = inputIterator->getChunk().getConstIterator();
         		while(!inputChunkIterator->end())
         		{
         			Value foo = inputChunkIterator->getItem();
-        			//void addData( char const* data, size_t const dataSize )
-        			//bool hasData(char const* data, size_t const dataSize ) const
-        			//foofilter->addData(foo.getString(), foo.size());
-        			foofilter.addData((char*)foo.data(), foo.size());
-        			//std::string myString;
-        			//myString.assign((char*)foo.data(), foo.size());
+
+        			timestamp_t t0 = get_timestamp();
+        			foofilter->addData((char*)foo.data(), foo.size());
+        			timestamp_t t1 = get_timestamp();
+        			double secs = (t1 - t0) / 1000000.0L;
+					addTime+=secs;
+        			bloomEntries++;
         			//LOG4CXX_DEBUG(loggerP,"size="<<foo.size()<< " ,DATA=" << myString);
-        			//foofilter.addData("abc", sizeof("abc"));
         			++(*inputChunkIterator);
         		}
         		//ConstChunk const& chunk = inputIterator->getChunk();
         		++(*inputIterator);
         	}
+    	Coordinates positions(1);
+    	positions[0] = (Coordinate)1;
+        inputIterator->setPosition(positions);
 
-        bool rtn = foofilter.hasData("abc",sizeof("abc"));
+    	double checkTime = 0;
+    	size_t wrong = 0;
+    	size_t space = 0;
+    	while(!inputIterator-> end())
+    	{
+    		std::shared_ptr<ConstChunkIterator> inputChunkIterator = inputIterator->getChunk().getConstIterator();
+    		while(!inputChunkIterator->end())
+    		{
+    			Value foo = inputChunkIterator->getItem();
+
+    			timestamp_t t0 = get_timestamp();
+    			bool hasdata = foofilter->hasData((char*)foo.data(), foo.size());
+    			timestamp_t t1 = get_timestamp();
+    			space += foo.size();
+    			if(!hasdata)
+    				wrong+=1;
+    			double secs = (t1 - t0) / 1000000.0L;
+    			checkTime+=secs;
+    			++(*inputChunkIterator);
+    		}
+    		++(*inputIterator);
+    	}
+
+        bool rtn = foofilter->hasData("abc",sizeof("abc"));
 		LOG4CXX_DEBUG(loggerP,"BLOOM hasData=" << rtn);
+		double aveinsert = addTime/(double)bloomEntries;
+		double avecheck = checkTime/(double)bloomEntries;
+		double avgsize = space/(double)bloomEntries;
+		LOG4CXX_DEBUG(loggerP,"BLOOM RUNTIME number_inserts=" << bloomEntries << ", ave_insert_time=" << aveinsert << ", check_time=" << avecheck << ", avg_space_per_entry=" << avgsize );
+		double wrongper = (double)wrong/(double)bloomEntries;
+		//      ssdreadcost = 8MB disk write on SSD = 8/350 = 0.2285714285714 s
+		//		8e6 bytes in one chunk / 4 bytes per string = 2e6 strings in a chunk
+		//      9e-6 ave time for one insert into bloom
+        //      estimated_element_write = 1e6;
+		//      costBloom = 9e-6 (sec per 4 byte insert) * estimated_num_elements + number_element_check * 2e-6
+		//      costDisk  = ceil((number_element_check * 4 bytes)%8e6)*8 / 350
+		//      ROI = costDisk/CostBloom
 
-        /*
-        array = localCondense(array, query, settings);
-        array = globalMerge(array, query, settings);
-        */
-        return array;
+		LOG4CXX_DEBUG(loggerP,"BLOOM RUNTIME number_inserts=" << bloomEntries << ", number_wrong=" << wrong << ", wrong_percent=" << wrongper << ", theory_p_false=" << optbloom.getPRealized() );
+		return array;
     }
 };
 REGISTER_PHYSICAL_OPERATOR_FACTORY(PhysicalBloom, "bloom", "physical_bloom");
