@@ -1,8 +1,8 @@
 #!/bin/bash
 #Quick restart script for dev use
 
-DBNAME="test_dbname"
-SCIDB_INSTALL=/opt/scidb/15.12
+DBNAME="mydb"
+SCIDB_INSTALL=/home/apoliakov/scidb
 iquery -aq "unload_library('grouped_aggregate')" > /dev/null 2>&1
 set -e
 mydir=`dirname $0`
