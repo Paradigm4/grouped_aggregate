@@ -289,7 +289,7 @@ private:
             catch (bad_lexical_cast const& exn)
             {
                 ostringstream error;
-                error<<"could not parse "<<error.str().c_str();
+                error<<"could not parse "<<header;
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
             }
         }
@@ -318,7 +318,7 @@ private:
             catch (bad_lexical_cast const& exn)
             {
                 ostringstream error;
-                error<<"could not parse "<<error.str().c_str();
+                error<<"could not parse "<<header;
                 throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
             }
         }
