@@ -393,7 +393,7 @@ public:
         }
         SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
-        return sorter.getSortedArray(input, query, tcomp);
+        return sorter.getSortedArray(input, query, getShared(), tcomp);
     }
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
@@ -631,7 +631,8 @@ public:
     {
 
     	//inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
-    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, true);
+    	//inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, true);
+    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, getShared());
 
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();

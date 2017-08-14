@@ -28,6 +28,7 @@
 
 #include <query/Operator.h>
 #include <query/AttributeComparator.h>
+#include <query/Aggregate.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
 
@@ -201,7 +202,7 @@ public:
                 string parameterString;
                 if (logical)
                 {
-                    parameterString = evaluate(((shared_ptr<OperatorParamLogicalExpression>&) param)->getExpression(),query, TID_STRING).getString();
+                    parameterString = evaluate(((shared_ptr<OperatorParamLogicalExpression>&) param)->getExpression(), TID_STRING).getString();
                 }
                 else
                 {

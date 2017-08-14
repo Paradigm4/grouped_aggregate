@@ -28,7 +28,7 @@ INSTALL_DIR = $(SCIDB)/lib/scidb/plugins
 OPTIMIZED=-O3 -DNDEBUG -g -ggdb3
 DEBUG=-g -ggdb3
 CCFLAGS = -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
-         -Wno-long-long -Wno-unused-parameter -Wno-unused -fPIC $(OPTIMIZED) 
+         -Wno-long-long -Wno-unused-parameter -Wno-unused -fPIC $(OPTIMIZED) -fno-omit-frame-pointer
 INC = -I. -DPROJECT_ROOT="\"$(SCIDB)\"" -I"$(SCIDB_THIRDPARTY_PREFIX)/3rdparty/boost/include/" \
       -I"$(SCIDB)/include" -I./extern
 
@@ -43,12 +43,12 @@ SRCS = LogicalGroupedAggregate.cpp \
 ifneq ("$(wildcard /usr/bin/g++-4.9)","")
  CC := "/usr/bin/gcc-4.9"
  CXX := "/usr/bin/g++-4.9"
- CCFLAGS+=-std=c++11 -DCPP11
+ CCFLAGS+=-std=c++14 -DCPP11
 else
  ifneq ("$(wildcard /opt/rh/devtoolset-3/root/usr/bin/gcc)","")
   CC := "/opt/rh/devtoolset-3/root/usr/bin/gcc"
   CXX := "/opt/rh/devtoolset-3/root/usr/bin/g++"
-  CCFLAGS+=-std=c++11 -DCPP11
+  CCFLAGS+=-std=c++14 -DCPP11
  endif
 endif
 
