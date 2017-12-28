@@ -448,11 +448,11 @@ public:
         size_t i =0;
         if(type != FINAL)
         {
-            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT32,    0, 0));
+            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT32,    0, CompressorType::NONE));
         }
         for (size_t j =0; j<_groupSize; ++j)
         {
-            outputAttributes.push_back( AttributeDesc(i++, _groupNames[j],  _groupTypes[j], 0, 0));
+            outputAttributes.push_back( AttributeDesc(i++, _groupNames[j],  _groupTypes[j], 0, CompressorType::NONE));
         }
         for (size_t j =0; j<_numAggs; ++j)
         {
@@ -461,7 +461,7 @@ public:
                                                       type == SPILL ? _inputAttributeTypes[j] :
                                                       type == MERGE ? _stateTypes[j] :
                                                                       _outputAttributeTypes[j],
-                                                      AttributeDesc::IS_NULLABLE, 0));
+                                                      AttributeDesc::IS_NULLABLE, CompressorType::NONE));
         }
         outputAttributes = addEmptyTagAttribute(outputAttributes);
         Dimensions outputDimensions;
