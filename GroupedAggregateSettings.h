@@ -26,11 +26,13 @@
 #ifndef GROUPED_AGGREGATE_SETTINGS
 #define GROUPED_AGGREGATE_SETTINGS
 
-#include <query/Operator.h>
+#include <query/PhysicalOperator.h>
 #include <query/AttributeComparator.h>
 #include <query/Aggregate.h>
 #include <boost/algorithm/string.hpp>
 #include <boost/lexical_cast.hpp>
+#include <query/Query.h>
+#include <system/Config.h>
 
 namespace scidb
 {
@@ -49,6 +51,15 @@ using boost::bad_lexical_cast;
 
 // Logger for operator. static to prevent visibility of variable outside of file
 static log4cxx::LoggerPtr logger(log4cxx::Logger::getLogger("scidb.operators.grouped_aggregate"));
+
+static const char* const KW_MAX_TABLE_SZ = "max_table_size";
+static const char* const KW_INPUT_SORTED = "input_sorted";
+static const char* const KW_NUM_HASH_BCKTS = "num_hash_buckets";
+static const char* const KW_SPILL_CHUNK_SZ = "spill_chuck_size";
+static const char* const KW_MERGE_CHUNK_SZ = "merge_chunk_size";
+static const char* const KW_OUTPUT_CHUNK_SZ = "output_chunk_size";
+
+typedef std::shared_ptr<OperatorParamLogicalExpression> ParamType_t ;
 
 /**
  * Table sizing considerations:
@@ -127,7 +138,7 @@ private:
 public:
     Settings(ArrayDesc const& inputSchema,
              vector< shared_ptr<OperatorParam> > const& operatorParameters,
-             bool logical,
+             KeywordParameters const& kwParams,
              shared_ptr<Query>& query):
         _groupSize              (0),
         _numAggs                (0),
@@ -152,8 +163,9 @@ public:
             if (param->getParamType() == PARAM_AGGREGATE_CALL)
             {
                 AttributeID inputAttId;
+                AttributeDesc inputAttDesc;
                 string outputAttName;
-                AggregatePtr agg = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &inputAttId, &outputAttName);
+                AggregatePtr agg = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &inputAttDesc, &outputAttName);
                 _aggregates.push_back(agg);
                 _stateTypes.push_back(agg->getStateType().typeId());
                 _outputAttributeTypes.push_back(agg->getResultType().typeId());
@@ -161,7 +173,7 @@ public:
                 {
                     throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << agg->getName();
                 }
-                _inputAttributeIds.push_back(inputAttId);
+                _inputAttributeIds.push_back(inputAttDesc.getId());
                 _outputAttributeNames.push_back(outputAttName);
                 ++_numAggs;
             }
@@ -199,18 +211,15 @@ public:
             }
             else
             {
-                string parameterString;
-                if (logical)
-                {
-                    parameterString = evaluate(((shared_ptr<OperatorParamLogicalExpression>&) param)->getExpression(), TID_STRING).getString();
-                }
-                else
-                {
-                    parameterString = ((shared_ptr<OperatorParamPhysicalExpression>&) param)->getExpression()->evaluate().getString();
-                }
-                parseStringParam(parameterString);
             }
         }
+        setKeywordParamBool(kwParams, KW_INPUT_SORTED, _inputSortedSet, _inputSorted);
+        setKeywordParamInt64(kwParams, KW_MAX_TABLE_SZ, _maxTableSizeSet, _maxTableSize);
+        setKeywordParamInt64(kwParams, KW_NUM_HASH_BCKTS, _numHashBucketsSet, _numHashBuckets);
+        setKeywordParamInt64(kwParams, KW_SPILL_CHUNK_SZ, _spilloverChunkSizeSet, _spilloverChunkSize);
+        setKeywordParamInt64(kwParams, KW_MERGE_CHUNK_SZ, _mergeChunkSizeSet, _mergeChunkSize);
+        setKeywordParamInt64(kwParams, KW_OUTPUT_CHUNK_SZ, _outputChunkSizeSet, _outputChunkSize);
+
         if(_numAggs == 0)
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "Aggregate not specified";
@@ -261,6 +270,75 @@ public:
     }
 
 private:
+    int64_t getParamContentInt64(Parameter& param)
+    {
+        size_t paramContent;
+
+        if(param->getParamType() == PARAM_LOGICAL_EXPRESSION) {
+            ParamType_t& paramExpr = reinterpret_cast<ParamType_t&>(param);
+            paramContent = evaluate(paramExpr->getExpression(), TID_INT64).getInt64();
+        } else {
+            OperatorParamPhysicalExpression* exp =
+                dynamic_cast<OperatorParamPhysicalExpression*>(param.get());
+            SCIDB_ASSERT(exp != nullptr);
+            paramContent = exp->getExpression()->evaluate().getInt64();
+
+        }
+        return paramContent;
+    }
+
+    void setKeywordParamInt64(KeywordParameters const& kwParams, const char* const kw, bool& alreadySet, size_t& valueToSet)
+    {
+        int64_t paramContent;
+        size_t numParams;
+
+        if (!alreadySet) {
+            Parameter kwParam = getKeywordParam(kwParams, kw);
+            if (kwParam) {
+                valueToSet = getParamContentInt64(kwParam);
+                alreadySet = true;
+            } else {
+                LOG4CXX_DEBUG(logger, "GA findKeyword null: " << kw);
+            }
+        }
+    }
+
+    bool getParamContentBool(Parameter& param)
+    {
+        bool paramContent;
+
+        if(param->getParamType() == PARAM_LOGICAL_EXPRESSION) {
+            ParamType_t& paramExpr = reinterpret_cast<ParamType_t&>(param);
+            paramContent = evaluate(paramExpr->getExpression(), TID_BOOL).getBool();
+        } else {
+            OperatorParamPhysicalExpression* exp =
+                dynamic_cast<OperatorParamPhysicalExpression*>(param.get());
+            SCIDB_ASSERT(exp != nullptr);
+            paramContent = exp->getExpression()->evaluate().getBool();
+        }
+        return paramContent;
+    }
+
+    void setKeywordParamBool(KeywordParameters const& kwParams, const char* const kw, bool& alreadySet, bool& valueToSet)
+    {
+        if (!alreadySet) {
+            Parameter kwParam = getKeywordParam(kwParams, kw);
+            if (kwParam) {
+                bool paramContent = getParamContentBool(kwParam);
+                valueToSet = paramContent;
+                alreadySet = true;
+            } else {
+                LOG4CXX_DEBUG(logger, "GA findKeyword null: " << kw);
+            }
+        }
+    }
+
+    Parameter getKeywordParam(KeywordParameters const& kwp, const std::string& kw) const
+    {
+        auto const& kwPair = kwp.find(kw);
+        return kwPair == kwp.end() ? Parameter() : kwPair->second;
+    }
+
     bool checkSizeTParam(string const& param, string const& header, size_t& target, bool& setFlag)
     {
         string headerWithEq = header + "=";
@@ -324,19 +402,6 @@ private:
             }
         }
         return false;
-    }
-
-    void parseStringParam(string const& param)
-    {
-        if(checkSizeTParam(param,   "max_table_size",      _maxTableSize,         _maxTableSizeSet      ) ) { return; }
-        if(checkSizeTParam(param,   "spill_chunk_size",    _spilloverChunkSize,   _spilloverChunkSizeSet) ) { return; }
-        if(checkSizeTParam(param,   "merge_chunk_size",    _mergeChunkSize,       _mergeChunkSizeSet    ) ) { return; }
-        if(checkSizeTParam(param,   "output_chunk_size",   _outputChunkSize,      _outputChunkSizeSet   ) ) { return; }
-        if(checkSizeTParam(param,   "num_hash_buckets",    _numHashBuckets,       _numHashBucketsSet    ) ) { return; }
-        if(checkBoolParam (param,   "input_sorted",        _inputSorted,          _inputSortedSet       ) ) { return; }
-        ostringstream error;
-        error<<"unrecognized parameter "<<param;
-        throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << error.str().c_str();
     }
 
 public:
@@ -463,7 +528,7 @@ public:
                                                                       _outputAttributeTypes[j],
                                                       AttributeDesc::IS_NULLABLE, CompressorType::NONE));
         }
-        outputAttributes = addEmptyTagAttribute(outputAttributes);
+        outputAttributes.addEmptyTagAttribute();
         Dimensions outputDimensions;
         if(type == MERGE)
         {
@@ -479,7 +544,7 @@ public:
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
 
-        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, defaultPartitioning(), query->getDefaultArrayResidency());
+        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, createDistribution(defaultPartitioning()), query->getDefaultArrayResidency());
     }
 
     /**
@@ -625,4 +690,3 @@ public:
 } } //namespaces
 
 #endif //grouped_aggregate_settings
-

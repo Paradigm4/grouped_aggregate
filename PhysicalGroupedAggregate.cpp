@@ -24,19 +24,19 @@
 */
 
 
-#include <query/Operator.h>
+#include <query/PhysicalOperator.h>
 #include <array/Metadata.h>
 #include <system/Cluster.h>
 #include <query/Query.h>
 #include <system/Exceptions.h>
 #include <system/Utils.h>
 #include <log4cxx/logger.h>
-#include <util/NetworkMessage.h>
+#include <network/NetworkMessage.h>
 #include <array/RLE.h>
+#include <array/MemArray.h>
 #include <array/SortArray.h>
 
-#include "query/Operator.h"
-#include <array/SortArray.h>
+#include <array/ArrayIterator.h>
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -139,17 +139,20 @@ public:
         AttributeID i = 0;
         if(SCHEMA_TYPE != Settings::FINAL)
         {
-            _hashArrayIterator = _output->getIterator(i);
+            auto aidIter = _output->getArrayDesc().getAttributes().find(i);
+            _hashArrayIterator = _output->getIterator(*aidIter);
             ++i;
         }
         for(size_t j =0; j<_groupSize; ++j)
         {
-            _groupArrayIterators[j] = _output->getIterator(i);
+            auto aidIter = _output->getArrayDesc().getAttributes().find(i);
+            _groupArrayIterators[j] = _output->getIterator(*aidIter);
             ++i;
         }
         for(size_t j=0; j<_numAggs; ++j)
         {
-            _itemArrayIterators[j] = _output->getIterator(i);
+            auto aidIter = _output->getArrayDesc().getAttributes().find(i);
+            _itemArrayIterators[j] = _output->getIterator(*aidIter);
             ++i;
         }
     }
@@ -378,7 +381,7 @@ public:
                std::vector<RedistributeContext> const& inputDistributions,
                std::vector< ArrayDesc> const& inputSchemas) const
     {
-        return RedistributeContext(createDistribution(psUndefined), _schema.getResidency() );
+        return RedistributeContext(_schema.getDistribution(), _schema.getResidency() );
     }
 
     shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
@@ -391,9 +394,9 @@ public:
             sortingAttributeInfos[g+1].columnNo = g+1;
             sortingAttributeInfos[g+1].ascent = true;
         }
-        SortArray sorter(input->getArrayDesc(), _arena, false, settings.getSpilloverChunkSize());
+        SortArray sorter(input->getArrayDesc(), _arena); //, false, settings.getSpilloverChunkSize());
         shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
-        return sorter.getSortedArray(input, query, getShared(), tcomp);
+        return sorter.getSortedArray(input, query, shared_from_this(), tcomp, NULL);
     }
 
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
@@ -415,12 +418,15 @@ public:
             }
             else
             {
-                gaiters[g] = inputArray->getConstIterator( settings.getGroupIds()[g] );
+                auto aidIter = inputArray->getArrayDesc().getAttributes().find(groupIds[g]);
+                gaiters[g] = inputArray->getConstIterator( *aidIter );
             }
         }
         if(gaiters[0].get() == 0)
         {   //TODO: also covers the case when the user wants to group by dimensions only
-            gaiters[0] = inputArray->getConstIterator(inputArray->getArrayDesc().getAttributes().size()-1);
+            AttributeID lastAttrId = inputArray->getArrayDesc().getAttributes().size()-1;
+            auto aidIter = inputArray->getArrayDesc().getAttributes().find(lastAttrId);
+            gaiters[0] = inputArray->getConstIterator(*aidIter);
         }
         size_t const numAggs = settings.getNumAggs();
         vector<shared_ptr<ConstArrayIterator> > iaiters(numAggs, NULL);
@@ -428,7 +434,8 @@ public:
         vector<Value const*> input(numAggs, NULL);
         for(size_t a=0; a<numAggs; ++a)
         {
-            iaiters[a] = inputArray->getConstIterator( settings.getInputAttributeIds()[a] );
+            auto aidIter = inputArray->getArrayDesc().getAttributes().find(settings.getInputAttributeIds()[a]);
+            iaiters[a] = inputArray->getConstIterator( *aidIter );
         }
         size_t const maxTableSize = settings.getMaxTableSize();
         MergeWriter<Settings::SPILL> flatWriter (settings, query);
@@ -539,14 +546,17 @@ public:
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
         aht.logStuff();
-        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(0));
+        auto aidIter = inputArray->getArrayDesc().getAttributes().find(0);
+        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(*aidIter));
         for(size_t g = 0; g<groupSize; ++g)
         {
-            gaiters[g] = arr->getConstIterator(g+1);
+            auto aidIter = inputArray->getArrayDesc().getAttributes().find(g+1);
+            gaiters[g] = arr->getConstIterator(*aidIter);
         }
         for(size_t a = 0; a<numAggs; ++a)
         {
-            iaiters[a] = arr->getConstIterator(a + groupSize + 1);
+            auto aidIter = inputArray->getArrayDesc().getAttributes().find(a + groupSize + 1);
+            iaiters[a] = arr->getConstIterator(*aidIter);
         }
         shared_ptr<ConstChunkIterator> hciter;
         AggregateHashTable::const_iterator ahtIter = aht.getIterator();
@@ -632,7 +642,7 @@ public:
 
     	//inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
     	//inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, true);
-    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, getShared());
+    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, shared_from_this());
 
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
@@ -652,7 +662,8 @@ public:
             positions[inst][0] = query->getInstanceID();
             positions[inst][1] = inst;
             positions[inst][2] = 0;
-            haiters[inst] = inputArray->getConstIterator(0);
+            auto aidIter = inputArray->getArrayDesc().getAttributes().find(0);
+            haiters[inst] = inputArray->getConstIterator(*aidIter);
             if(!haiters[inst]->setPosition(positions[inst]))
             {
                 haiters[inst].reset();
@@ -674,13 +685,15 @@ public:
                 hciters[inst] = haiters[inst]->getChunk().getConstIterator();
                 for(size_t g =0; g<groupSize; ++g)
                 {
-                    gaiters[inst * groupSize + g] = inputArray->getConstIterator(1 + g);
+                    auto aidIter = inputArray->getArrayDesc().getAttributes().find(1 + g);
+                    gaiters[inst * groupSize + g] = inputArray->getConstIterator(*aidIter);
                     gaiters[inst * groupSize + g]->setPosition(positions[inst]);
                     gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
                 }
                 for(size_t a=0; a<numAggs; ++a)
                 {
-                    vaiters[inst * numAggs + a] = inputArray->getConstIterator(1 + groupSize + a);
+                    auto aidIter = inputArray->getArrayDesc().getAttributes().find(1 + groupSize + a);
+                    vaiters[inst * numAggs + a] = inputArray->getConstIterator( *aidIter );
                     vaiters[inst * numAggs + a]->setPosition(positions[inst]);
                     vciters[inst * numAggs + a] = vaiters[inst * numAggs + a]->getChunk().getConstIterator();
                 }
@@ -792,7 +805,7 @@ public:
 
     shared_ptr< Array> execute(vector< shared_ptr< Array> >& inputArrays, shared_ptr<Query> query)
     {
-        Settings settings(inputArrays[0]->getArrayDesc(), _parameters, false, query);
+        Settings settings(inputArrays[0]->getArrayDesc(), _parameters, _kwParameters, query);
         shared_ptr<Array> array = inputArrays[0];
         array = localCondense(array, query, settings);
         array = globalMerge(array, query, settings);

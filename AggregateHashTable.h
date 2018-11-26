@@ -26,7 +26,7 @@
 #ifndef HASH_TABLE_UTILITIES
 #define HASH_TABLE_UTILITIES
 
-#include <query/Operator.h>
+#include <query/PhysicalOperator.h>
 #include <query/AttributeComparator.h>
 #include <util/arena/Map.h>
 #include <util/arena/Vector.h>

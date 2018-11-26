@@ -1,4 +1,4 @@
-ifeq ($(SCIDB),) 
+ifeq ($(SCIDB),)
   X := $(shell which scidb 2>/dev/null)
   ifneq ($(X),)
     X := $(shell dirname ${X})
@@ -48,7 +48,7 @@ else
  ifneq ("$(wildcard /opt/rh/devtoolset-3/root/usr/bin/gcc)","")
   CC := "/opt/rh/devtoolset-3/root/usr/bin/gcc"
   CXX := "/opt/rh/devtoolset-3/root/usr/bin/g++"
-  CCFLAGS+=-std=c++14 -DCPP11
+  CCFLAGS+=-std=c++14 -DCPP14
  endif
 endif
 
@@ -57,7 +57,7 @@ all: libgrouped_aggregate.so
 clean:
 	rm -rf *.so *.o
 
-libgrouped_aggregate.so: $(SRCS) AggregateHashTable.h GroupedAggregateSettings.h 
+libgrouped_aggregate.so: $(SRCS) AggregateHashTable.h GroupedAggregateSettings.h
 	@if test ! -d "$(SCIDB)"; then echo  "Error. Try:\n\nmake SCIDB=<PATH TO SCIDB INSTALL PATH>"; exit 1; fi
 	$(CXX) $(CCFLAGS) $(INC) -o LogicalGroupedAggregate.o -c LogicalGroupedAggregate.cpp
 	$(CXX) $(CCFLAGS) $(INC) -o PhysicalGroupedAggregate.o -c PhysicalGroupedAggregate.cpp
