@@ -183,7 +183,7 @@ public:
                 shared_ptr<OperatorParamReference> ref = dynamic_pointer_cast<OperatorParamReference> (param);
                 AttributeID attId = ref->getObjectNo();
                 string groupName  = ref->getObjectName();
-                TypeId groupType  = inputSchema.getAttributes()[attId].getType();
+                TypeId groupType  = inputSchema.getAttributes().findattr(attId).getType();
                 _groupIds.push_back(attId);
                 _groupNames.push_back(groupName);
                 _groupTypes.push_back(groupType);
@@ -235,7 +235,7 @@ public:
             AttributeID const& inAttId = _inputAttributeIds[i];
             if(inAttId != INVALID_ATTRIBUTE_ID)
             {
-                ssize_t attSize = inputSchema.getAttributes()[inAttId].getSize();
+                ssize_t attSize = inputSchema.getAttributes().findattr(inAttId).getSize();
                 if(attSize > 0 && (scapeGoatSize == 0 || attSize < scapeGoatSize))
                 {
                     scapeGoat = inAttId;
@@ -250,7 +250,7 @@ public:
             {
                 inAttId = scapeGoat;
             }
-            _inputAttributeTypes.push_back(inputSchema.getAttributes()[inAttId].getType());
+            _inputAttributeTypes.push_back(inputSchema.getAttributes().findattr(inAttId).getType());
         }
         if(!_inputSortedSet)
         {
@@ -513,16 +513,15 @@ public:
         size_t i =0;
         if(type != FINAL)
         {
-            outputAttributes.push_back( AttributeDesc(i++, "hash",   TID_UINT32,    0, CompressorType::NONE));
+            outputAttributes.push_back( AttributeDesc("hash",   TID_UINT32,    0, CompressorType::NONE));
         }
         for (size_t j =0; j<_groupSize; ++j)
         {
-            outputAttributes.push_back( AttributeDesc(i++, _groupNames[j],  _groupTypes[j], 0, CompressorType::NONE));
+            outputAttributes.push_back( AttributeDesc(_groupNames[j],  _groupTypes[j], 0, CompressorType::NONE));
         }
         for (size_t j =0; j<_numAggs; ++j)
         {
-            outputAttributes.push_back( AttributeDesc(i++,
-                                                      _outputAttributeNames[j],
+            outputAttributes.push_back( AttributeDesc(_outputAttributeNames[j],
                                                       type == SPILL ? _inputAttributeTypes[j] :
                                                       type == MERGE ? _stateTypes[j] :
                                                                       _outputAttributeTypes[j],
@@ -544,7 +543,7 @@ public:
                                                  type == MERGE ? _mergeChunkSize :
                                                                  _outputChunkSize, 0));
 
-        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, createDistribution(defaultPartitioning()), query->getDefaultArrayResidency());
+        return ArrayDesc(name.size() == 0 ? "grouped_agg_state" : name, outputAttributes, outputDimensions, createDistribution(dtUndefined), query->getDefaultArrayResidency());
     }
 
     /**

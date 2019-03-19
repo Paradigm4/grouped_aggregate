@@ -372,16 +372,25 @@ public:
         PhysicalOperator(logicalName, physicalName, parameters, schema)
     {}
 
-    virtual bool changesDistribution(std::vector<ArrayDesc> const&) const
+    /// @see OperatorDist
+    DistType inferSynthesizedDistType(std::vector<DistType> const& /*inDist*/, size_t /*depth*/) const override
     {
-        return true;
+      // Distribution is undefined.
+      SCIDB_ASSERT(_schema.getDistribution()->getDistType()==dtUndefined);
+      return _schema.getDistribution()->getDistType();
     }
 
-    virtual RedistributeContext getOutputDistribution(
-               std::vector<RedistributeContext> const& inputDistributions,
-               std::vector< ArrayDesc> const& inputSchemas) const
+    /// @see PhysicalOperator
+    virtual RedistributeContext getOutputDistribution(vector<RedistributeContext> const& inputDistributions,
+                                                      vector<ArrayDesc> const& inputSchemas) const override
     {
-        return RedistributeContext(_schema.getDistribution(), _schema.getResidency() );
+      assertConsistency(inputSchemas[0], inputDistributions[0]);
+
+      // Distribution is undefined.
+      SCIDB_ASSERT(_schema.getDistribution()->getDistType()==dtUndefined);
+      _schema.setResidency(inputDistributions[0].getArrayResidency());
+
+      return RedistributeContext(_schema.getDistribution(), _schema.getResidency());
     }
 
     shared_ptr<Array> flatSort(shared_ptr<Array> & input, shared_ptr<Query>& query, Settings& settings)
@@ -640,9 +649,9 @@ public:
     shared_ptr<Array> globalMerge(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
 
-    	//inputArray = redistributeToRandomAccess(inputArray, query, psByRow, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
-    	//inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, true);
-    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(psByRow),query->getDefaultArrayResidency(), query, shared_from_this());
+    	//inputArray = redistributeToRandomAccess(inputArray, query, dtRowCyclic, ALL_INSTANCE_MASK, std::shared_ptr<CoordinateTranslator>(), 0, std::shared_ptr<PartitioningSchemaData>());
+    	//inputArray = redistributeToRandomAccess(inputArray,createDistribution(dtRowCyclic),query->getDefaultArrayResidency(), query, true);
+    	inputArray = redistributeToRandomAccess(inputArray,createDistribution(dtRowCyclic),query->getDefaultArrayResidency(), query, shared_from_this());
 
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
