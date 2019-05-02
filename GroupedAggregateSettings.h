@@ -132,7 +132,7 @@ private:
     vector<TypeId> _inputAttributeTypes;
     vector<TypeId> _stateTypes;
     vector<TypeId> _outputAttributeTypes;
-    vector<AttributeID> _inputAttributeIds;
+    vector<AttributeDesc> _inputAttributeIds;
     vector<string> _outputAttributeNames;
 
 public:
@@ -173,7 +173,7 @@ public:
                 {
                     throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << agg->getName();
                 }
-                _inputAttributeIds.push_back(inputAttDesc.getId());
+                _inputAttributeIds.push_back(inputAttDesc);
                 _outputAttributeNames.push_back(outputAttName);
                 ++_numAggs;
             }
@@ -209,9 +209,6 @@ public:
                 _isGroupOnAttribute.push_back(false);
                 ++_groupSize;
             }
-            else
-            {
-            }
         }
         setKeywordParamBool(kwParams, KW_INPUT_SORTED, _inputSortedSet, _inputSorted);
         setKeywordParamInt64(kwParams, KW_MAX_TABLE_SZ, _maxTableSizeSet, _maxTableSize);
@@ -228,14 +225,14 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
-        ssize_t scapeGoat = 0;
+        AttributeDesc scapeGoat;
         ssize_t scapeGoatSize = 0;
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
-            AttributeID const& inAttId = _inputAttributeIds[i];
-            if(inAttId != INVALID_ATTRIBUTE_ID)
+            AttributeDesc const& inAttId = _inputAttributeIds[i];
+            if (inAttId.getId() != INVALID_ATTRIBUTE_ID)
             {
-                ssize_t attSize = inputSchema.getAttributes().findattr(inAttId).getSize();
+                ssize_t attSize = _inputAttributeIds[i].getSize();
                 if(attSize > 0 && (scapeGoatSize == 0 || attSize < scapeGoatSize))
                 {
                     scapeGoat = inAttId;
@@ -245,12 +242,12 @@ public:
         }
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
-            AttributeID& inAttId = _inputAttributeIds[i];
-            if (inAttId == INVALID_ATTRIBUTE_ID)
+            AttributeDesc& inAttId = _inputAttributeIds[i];
+            if (inAttId.getId() == INVALID_ATTRIBUTE_ID)
             {
                 inAttId = scapeGoat;
             }
-            _inputAttributeTypes.push_back(inputSchema.getAttributes().findattr(inAttId).getType());
+            _inputAttributeTypes.push_back(_inputAttributeIds[i].getType());
         }
         if(!_inputSortedSet)
         {
@@ -435,7 +432,7 @@ public:
         return _inputAttributeTypes;
     }
 
-    vector<AttributeID> const& getInputAttributeIds() const
+    vector<AttributeDesc> const& getInputAttributeIds() const
     {
         return _inputAttributeIds;
     }
