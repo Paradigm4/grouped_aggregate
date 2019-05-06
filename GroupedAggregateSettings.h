@@ -132,7 +132,7 @@ private:
     vector<TypeId> _inputAttributeTypes;
     vector<TypeId> _stateTypes;
     vector<TypeId> _outputAttributeTypes;
-    vector<AttributeDesc> _inputAttributeIds;
+    vector<AttributeID> _inputAttributeIds;
     vector<string> _outputAttributeNames;
 
 public:
@@ -173,7 +173,7 @@ public:
                 {
                     throw SYSTEM_EXCEPTION(SCIDB_SE_OPERATOR, SCIDB_LE_AGGREGATION_ORDER_MISMATCH) << agg->getName();
                 }
-                _inputAttributeIds.push_back(inputAttDesc);
+                _inputAttributeIds.push_back(inputAttDesc.getId());
                 _outputAttributeNames.push_back(outputAttName);
                 ++_numAggs;
             }
@@ -225,14 +225,14 @@ public:
         {
             throw SYSTEM_EXCEPTION(SCIDB_SE_INTERNAL, SCIDB_LE_ILLEGAL_OPERATION) << "No groups specified";
         }
-        AttributeDesc scapeGoat;
+        AttributeID scapeGoat = 0;
         ssize_t scapeGoatSize = 0;
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
-            AttributeDesc const& inAttId = _inputAttributeIds[i];
-            if (inAttId.getId() != INVALID_ATTRIBUTE_ID)
+            AttributeID const& inAttId = _inputAttributeIds[i];
+            if (inAttId != INVALID_ATTRIBUTE_ID)
             {
-                ssize_t attSize = _inputAttributeIds[i].getSize();
+                ssize_t attSize = inputSchema.getAttributes().findattr(_inputAttributeIds[i]).getSize();
                 if(attSize > 0 && (scapeGoatSize == 0 || attSize < scapeGoatSize))
                 {
                     scapeGoat = inAttId;
@@ -242,12 +242,12 @@ public:
         }
         for(size_t i =0; i<_inputAttributeIds.size(); ++i)
         {
-            AttributeDesc& inAttId = _inputAttributeIds[i];
-            if (inAttId.getId() == INVALID_ATTRIBUTE_ID)
+            AttributeID& inAttId = _inputAttributeIds[i];
+            if (inAttId == INVALID_ATTRIBUTE_ID)
             {
                 inAttId = scapeGoat;
             }
-            _inputAttributeTypes.push_back(_inputAttributeIds[i].getType());
+            _inputAttributeTypes.push_back(inputSchema.getAttributes().findattr(_inputAttributeIds[i]).getType());
         }
         if(!_inputSortedSet)
         {
@@ -432,7 +432,7 @@ public:
         return _inputAttributeTypes;
     }
 
-    vector<AttributeDesc> const& getInputAttributeIds() const
+    vector<AttributeID> const& getInputAttributeIds() const
     {
         return _inputAttributeIds;
     }
