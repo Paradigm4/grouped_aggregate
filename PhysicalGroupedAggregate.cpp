@@ -555,16 +555,16 @@ public:
         shared_ptr<Array> arr = settings.inputSorted() ? flatCondensed.finalize() : flatWriter.finalize();
         arr = flatSort(arr, query, settings);
         aht.logStuff();
-        auto aidIter = inputArray->getArrayDesc().getAttributes().find(0);
-        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(*aidIter));
+        auto aidIter = inputArray->getArrayDesc().getAttributes().firstDataAttribute();
+        shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(aidIter));
         for(size_t g = 0; g<groupSize; ++g)
         {
-            auto aidIter = inputArray->getArrayDesc().getAttributes().find(g+1);
+            auto aidIter = arr->getArrayDesc().getAttributes().find(g+1);
             gaiters[g] = arr->getConstIterator(*aidIter);
         }
         for(size_t a = 0; a<numAggs; ++a)
         {
-            auto aidIter = inputArray->getArrayDesc().getAttributes().find(a + groupSize + 1);
+            auto aidIter = arr->getArrayDesc().getAttributes().find(a + groupSize + 1);
             iaiters[a] = arr->getConstIterator(*aidIter);
         }
         shared_ptr<ConstChunkIterator> hciter;
