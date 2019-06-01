@@ -1,10 +1,10 @@
 # grouped_aggregate
 
-A prototype operator for aggregation grouped by attributes, dimensions or combinations thereof. 
+A prototype operator for aggregation grouped by attributes, dimensions or combinations thereof.
 
 ## Example
 ```
-$ iquery -anq "store(apply(build(<a:double>[x=1:10,5,0,y=1:10,5,0], random()%10), b, string(random()%2)),test)" 
+$ iquery -anq "store(apply(build(<a:double>[x=1:10,5,0,y=1:10,5,0], random()%10), b, string(random()%2)),test)"
 Query was executed successfully
 
 $ iquery -aq "grouped_aggregate(test, sum(a) as total, b)"
@@ -12,7 +12,7 @@ $ iquery -aq "grouped_aggregate(test, sum(a) as total, b)"
 {0,0} '1',290
 {2,0} '0',231
 
-$ iquery -aq "grouped_aggregate(test, avg(a), count(*), b, x, 'output_chunk_size=10000')"
+$ iquery -aq "grouped_aggregate(test, avg(a), count(*), b, x, 'output_chunk_size:10000')"
 {instance_id,value_no} b,x,a_avg,count
 {0,0} '0',5,6.33333,3
 {0,1} '1',6,4.5,6
@@ -38,10 +38,10 @@ $ iquery -aq "grouped_aggregate(test, avg(a), count(*), b, x, 'output_chunk_size
 
 ## More formally
 ```
-grouped_aggregate(input_array, aggregate_1(input_1) [as alias_1], group_1, 
+grouped_aggregate(input_array, aggregate_1(input_1) [as alias_1], group_1,
                   [, aggregate_2(input_2),...]
                   [, group_2,...]
-                  [, 'setting=value'])
+                  [, setting:value])
 
 Where
   input_array            :: any SciDB array
@@ -51,30 +51,30 @@ Where
 The operator must be invoked with at least one aggregate and at least one group.
 
 Optional tuning settings:
-  input_sorted=<1/0>            :: a hint that the input array is sorted by groups, or that, generally, 
-                                   aggregate group values are likely repeated often. Defaults to 1 (true) 
+  input_sorted:<true/false>     :: a hint that the input array is sorted by groups, or that, generally,
+                                   aggregate group values are likely repeated often. Defaults to 1 (true)
                                    if aggregating by non-last dimension, 0 otherwise.
-  max_table_size=MB             :: the amount of memory (in MB) that the operator's hash table structure
-                                   may consume. Once the table exceeds this size, new aggregate groups 
-                                   are placed into a spillover array. Defaults to the merge-sort-buffer 
+  max_table_size:MB             :: the amount of memory (in MB) that the operator's hash table structure
+                                   may consume. Once the table exceeds this size, new aggregate groups
+                                   are placed into a spillover array. Defaults to the merge-sort-buffer
                                    configuration setting.
-  num_hash_buckets=N            :: the number of hash buckets to allocate in the hash table. Larger 
-                                   values improve speed but also use more memory. Should be a prime. 
+  num_hash_buckets:N            :: the number of hash buckets to allocate in the hash table. Larger
+                                   values improve speed but also use more memory. Should be a prime.
                                    Default is based on the max_table_size.
-  spill_chunk_size=C            :: the chunk size of the spill-over array. Defaults to 100,000. Should
-                                   be smaller if there are are many of group-by attributes or aggregates. 
+  spill_chunk_size:C            :: the chunk size of the spill-over array. Defaults to 100,000. Should
+                                   be smaller if there are are many of group-by attributes or aggregates.
                                    TBD: automate
-  merge_chunk_size=C            :: the chunk size of the array used to transfer data between instances. 
-                                   Defaults to 100,000. Should be smaller if there are many group-by 
+  merge_chunk_size:C            :: the chunk size of the array used to transfer data between instances.
+                                   Defaults to 100,000. Should be smaller if there are many group-by
                                    attributes or instances. TBD: automate.
-  output_chunk_size=C           :: the chunk size of the final output array. Defaults to 100,000. 
+  output_chunk_size:C           :: the chunk size of the final output array. Defaults to 100,000.
                                    TBD: automate.
-  
-Returned array contains one attribute for each group, and one attribute for each aggregated value. 
+
+Returned array contains one attribute for each group, and one attribute for each aggregated value.
 The dimensions are superfluous.
 
-When grouping by attributes, an attribute value of null (or any missing code) constitutes an invalid 
-group that is not included in the output. All inputs associated with invalid groups are ignored. 
+When grouping by attributes, an attribute value of null (or any missing code) constitutes an invalid
+group that is not included in the output. All inputs associated with invalid groups are ignored.
 When grouping by multiple attributes, a null or missing value in any one of the attributes makes the
 entire group invalid.
 ```

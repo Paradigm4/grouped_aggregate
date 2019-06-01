@@ -22,14 +22,16 @@
 *
 * END_COPYRIGHT
 */
+#define LEGACY_API
 
-#include "query/Operator.h"
+#include "query/LogicalOperator.h"
 #include "GroupedAggregateSettings.h"
 
 namespace scidb
 {
 
 using namespace std;
+using namespace grouped_aggregate;
 using grouped_aggregate::Settings;
 
 class LogicalGroupedAggregate : public LogicalOperator
@@ -38,31 +40,48 @@ public:
     LogicalGroupedAggregate(const string& logicalName, const string& alias):
         LogicalOperator(logicalName, alias)
     {
-        ADD_PARAM_INPUT()
-        ADD_PARAM_VARIES()
         //TODO
         _usage = "write me a usage, bro!\n";
     }
 
-    std::vector<std::shared_ptr<OperatorParamPlaceholder> >
-    nextVaryParamPlaceholder(const std::vector< ArrayDesc> &schemas)
+    static PlistSpec const* makePlistSpec()
     {
-        std::vector<std::shared_ptr<OperatorParamPlaceholder> > res;
-        if(_parameters.size()>=2)
-        {
-            res.push_back(END_OF_VARIES_PARAMS());
-        }
-        res.push_back(PARAM_AGGREGATE_CALL());
-        res.push_back(PARAM_IN_ATTRIBUTE_NAME("void"));
-        res.push_back(PARAM_IN_DIMENSION_NAME());
-        res.push_back(PARAM_CONSTANT("string"));
-        return res;
+        static PlistSpec argSpec {
+            { "", // positionals
+              RE(RE::LIST, {
+                 RE(PP(PLACEHOLDER_INPUT)),
+                    RE(RE::LIST, {
+                       RE(RE::PLUS, {
+                          RE(RE::OR, {
+                             RE(PP(PLACEHOLDER_AGGREGATE_CALL)),
+                             RE(PP(PLACEHOLDER_ATTRIBUTE_NAME)),
+                             RE(PP(PLACEHOLDER_DIMENSION_NAME))
+                          }),
+                       }),
+                       RE(RE::PLUS, {
+                          RE(RE::OR, {
+                             RE(PP(PLACEHOLDER_AGGREGATE_CALL)),
+                             RE(PP(PLACEHOLDER_ATTRIBUTE_NAME)),
+                             RE(PP(PLACEHOLDER_DIMENSION_NAME))
+                          }),
+                       })
+                 })
+              })
+            },
+            { KW_INPUT_SORTED, RE(PP(PLACEHOLDER_CONSTANT, TID_BOOL)) },
+            { KW_MAX_TABLE_SZ, RE(PP(PLACEHOLDER_CONSTANT, TID_UINT64)) },
+            { KW_NUM_HASH_BCKTS, RE(PP(PLACEHOLDER_CONSTANT, TID_UINT64)) },
+            { KW_SPILL_CHUNK_SZ, RE(PP(PLACEHOLDER_CONSTANT, TID_UINT64)) },
+            { KW_MERGE_CHUNK_SZ, RE(PP(PLACEHOLDER_CONSTANT, TID_UINT64)) },
+            { KW_OUTPUT_CHUNK_SZ, RE(PP(PLACEHOLDER_CONSTANT, TID_UINT64)) }
+        };
+        return &argSpec;
     }
 
     ArrayDesc inferSchema(vector< ArrayDesc> schemas, shared_ptr< Query> query)
     {
         size_t const numInstances = query->getInstancesCount();
-        grouped_aggregate::Settings settings(schemas[0], _parameters, true, query);
+        grouped_aggregate::Settings settings(schemas[0], _parameters, _kwParameters, query);
         return settings.makeSchema(query, Settings::FINAL, schemas[0].getName());
     }
 };
