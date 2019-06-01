@@ -1,5 +1,7 @@
 # grouped_aggregate
 
+[![SciDB 19.3](https://img.shields.io/badge/SciDB-19.3-blue.svg)](https://forum.paradigm4.com/t/scidb-release-19-3/2359)
+
 A prototype operator for aggregation grouped by attributes, dimensions or combinations thereof.
 
 ## Example
