@@ -86,7 +86,7 @@ private:
 
 public:
     MergeWriter(Settings& settings, shared_ptr<Query> const& query, string const name = ""):
-        _output(make_shared<MemArray>(settings.makeSchema(query,SCHEMA_TYPE, name), query)),
+        _output(std::make_shared<MemArray>(settings.makeSchema(query,SCHEMA_TYPE, name), query)),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
         _chunkSize(_output->getArrayDesc().getDimensions()[_output->getArrayDesc().getDimensions().size()-1].getChunkInterval()),
@@ -404,7 +404,7 @@ public:
             sortingAttributeInfos[g+1].ascent = true;
         }
         SortArray sorter(input->getArrayDesc(), _arena); //, false, settings.getSpilloverChunkSize());
-        shared_ptr<TupleComparator> tcomp(make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
+        shared_ptr<TupleComparator> tcomp(std::make_shared<TupleComparator>(sortingAttributeInfos, input->getArrayDesc()));
         return sorter.getSortedArray(input, query, shared_from_this(), tcomp, NULL);
     }
 
