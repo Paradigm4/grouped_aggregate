@@ -27,7 +27,7 @@ INSTALL_DIR = $(SCIDB)/lib/scidb/plugins
 # Include the OPTIMIZED flags for non-debug use
 OPTIMIZED=-O3 -DNDEBUG -g -ggdb3
 DEBUG=-g -ggdb3
-CCFLAGS = -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
+CCFLAGS = -std=c++11 -std=gnu++14 -pedantic -W -Wextra -Wall -Wno-variadic-macros -Wno-strict-aliasing \
          -Wno-long-long -Wno-unused-parameter -Wno-unused -fPIC $(OPTIMIZED) -fno-omit-frame-pointer
 INC = -I. -DPROJECT_ROOT="\"$(SCIDB)\"" -I"$(SCIDB_THIRDPARTY_PREFIX)/3rdparty/boost/include/" \
       -I"$(SCIDB)/include" -I./extern
@@ -49,6 +49,12 @@ else
   CC := "/opt/rh/devtoolset-3/root/usr/bin/gcc"
   CXX := "/opt/rh/devtoolset-3/root/usr/bin/g++"
   CCFLAGS+=-std=c++14 -DCPP14
+ else
+  GCC_VER_5 := $(shell echo `gcc -dumpversion | cut -f1-2 -d.` \>= 5 | bc )
+  $(info gcc version is $(GCC_VER_5))
+	ifeq ("$(GCC_VER_5)", "1")
+		CCFLAGS+=-std=c++11 -std=gnu++14
+	endif
  endif
 endif
 
