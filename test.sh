@@ -1,5 +1,18 @@
 #!/bin/bash
 
+MYDIR=$(cd $(dirname $0) && pwd)
+
+# --outfile <filename> : write iquery output to the given file.
+# This is important for running in the SciDB test harness.
+if [ "$1" = "--outfile" ]; then
+    OUTFILE="$2"
+    shift 2
+else
+    OUTFILE=$MYDIR/test.out
+fi
+
+rm -f "$OUTFILE"
+
 iquery -anq "remove(foo)" > /dev/null 2>&1
 iquery -anq "remove(a_new)" > /dev/null 2>&1
 iquery -anq "remove(a_old)" > /dev/null 2>&1
@@ -23,8 +36,8 @@ store(
  foo
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, a, var(val)), a_new)"
-time iquery -naq "
+iquery -naq "store(grouped_aggregate(foo, a, var(val)), a_new)"
+iquery -naq "
 store(
  redimension(
   index_lookup(foo as A, uniq(sort(project(foo, a))), A.a, idx),
@@ -34,8 +47,8 @@ store(
  a_old
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, b, sum(val)), b_new)"
-time iquery -naq "
+iquery -naq "store(grouped_aggregate(foo, b, sum(val)), b_new)"
+iquery -naq "
 store(
  redimension(
   index_lookup(foo as A, uniq(sort(project(foo, b))), A.b, idx),
@@ -45,8 +58,8 @@ store(
  b_old
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, c, avg(val)), c_new)"
-time iquery -naq "
+iquery -naq "store(grouped_aggregate(foo, c, avg(val)), c_new)"
+iquery -naq "
 store(
  redimension(
   index_lookup(foo as A, uniq(sort(project(filter(foo, is_nan(c) = false), c))), A.c, idx),
@@ -56,8 +69,8 @@ store(
  c_old
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, a, c, avg(val)), ac_new)"
-time iquery -naq "
+iquery -naq "store(grouped_aggregate(foo, a, c, avg(val)), ac_new)"
+iquery -naq "
 store(
  redimension(
   index_lookup(
@@ -72,8 +85,8 @@ store(
  ac_old
 )"
 
-time iquery -naq "store(grouped_aggregate(foo, a, b, max(val), var(val)), ab_new)"
-time iquery -naq "
+iquery -naq "store(grouped_aggregate(foo, a, b, max(val), var(val)), ab_new)"
+iquery -naq "
 store(
  redimension(
   index_lookup(
@@ -89,24 +102,24 @@ store(
 )"
 
 
-iquery -aq "op_count(a_new)" > test.out
-iquery -aq "op_count(a_old)" >> test.out
-iquery -aq "aggregate(apply(join(sort(a_new,a), sort(a_old,a)), z, iif(a_new.val_var=a_old.val_var, 1,0)), sum(z))" >> test.out
+iquery -aq "op_count(a_new)" >> $OUTFILE
+iquery -aq "op_count(a_old)" >> $OUTFILE
+iquery -aq "aggregate(apply(join(sort(a_new,a), sort(a_old,a)), z, iif(a_new.val_var=a_old.val_var, 1,0)), sum(z))" >> $OUTFILE
 
-iquery -aq "op_count(b_new)" >> test.out
-iquery -aq "op_count(b_old)" >> test.out
-iquery -aq "aggregate(apply(join(sort(b_new,b), sort(b_old,b)), z, iif(b_new.val_sum=b_old.val_sum, 1,0)), sum(z))" >> test.out
+iquery -aq "op_count(b_new)" >> $OUTFILE
+iquery -aq "op_count(b_old)" >> $OUTFILE
+iquery -aq "aggregate(apply(join(sort(b_new,b), sort(b_old,b)), z, iif(b_new.val_sum=b_old.val_sum, 1,0)), sum(z))" >> $OUTFILE
 
-iquery -aq "op_count(c_new)" >> test.out
-iquery -aq "op_count(c_old)" >> test.out
-iquery -aq "aggregate(apply(join(sort(c_new,c), sort(c_old,c)), z, iif(c_new.val_avg=c_old.val_avg, 1,0)), sum(z))" >> test.out
+iquery -aq "op_count(c_new)" >> $OUTFILE
+iquery -aq "op_count(c_old)" >> $OUTFILE
+iquery -aq "aggregate(apply(join(sort(c_new,c), sort(c_old,c)), z, iif(c_new.val_avg=c_old.val_avg, 1,0)), sum(z))" >> $OUTFILE
 
-iquery -aq "op_count(ac_new)" >> test.out
-iquery -aq "op_count(ac_old)" >> test.out
-iquery -aq "aggregate(apply(join(sort(ac_new,a,c), sort(ac_old,a,c)), z, iif(ac_new.val_avg=ac_old.val_avg or (ac_new.val_avg is null and ac_old.val_avg is null), 1,0)), sum(z))" >> test.out
+iquery -aq "op_count(ac_new)" >> $OUTFILE
+iquery -aq "op_count(ac_old)" >> $OUTFILE
+iquery -aq "aggregate(apply(join(sort(ac_new,a,c), sort(ac_old,a,c)), z, iif(ac_new.val_avg=ac_old.val_avg or (ac_new.val_avg is null and ac_old.val_avg is null), 1,0)), sum(z))" >> $OUTFILE
 
-iquery -aq "op_count(ab_new)" >> test.out
-iquery -aq "op_count(ab_old)" >> test.out
+iquery -aq "op_count(ab_new)" >> $OUTFILE
+iquery -aq "op_count(ab_old)" >> $OUTFILE
 iquery -aq "aggregate(
  apply(
   join(
@@ -121,8 +134,8 @@ iquery -aq "aggregate(
    0)
   ),
   sum(z)
- )" >> test.out
+ )" >> $OUTFILE
 
-iquery -aq "aggregate(grouped_aggregate(foo, count(*), count(b), i), sum(count), sum(b_count))" >> test.out
+iquery -aq "aggregate(grouped_aggregate(foo, count(*), count(b), i), sum(count), sum(b_count))" >> $OUTFILE
 
-diff test.out test.expected
+diff $OUTFILE $MYDIR/test.expected && echo "$(basename $0) succeeded"
