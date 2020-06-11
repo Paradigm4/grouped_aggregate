@@ -148,7 +148,7 @@ private:
 
     uint32_t hashGroup(std::vector<Value const*> const& group, size_t const groupSize) const
     {
-        size_t totalSize = 0;
+        uint32_t totalSize = 0;
         for(size_t i =0; i<groupSize; ++i)
         {
             totalSize += group[i]->size();
@@ -179,7 +179,7 @@ private:
     ArenaPtr                                 _arena;
     size_t const                             _groupSize;
     size_t const                             _numAggs;
-    size_t const                             _numHashBuckets;
+    uint32_t const                           _numHashBuckets;
     mgd::vector<HashTableEntry*>             _buckets;
     mgd::vector<Value>                       _values;
     Value const*                             _lastGroup;
@@ -246,7 +246,7 @@ public:
         _arena(arena),
         _groupSize(settings.getGroupSize()),
         _numAggs(settings.getNumAggs()),
-        _numHashBuckets(settings.getNumHashBuckets()),
+        _numHashBuckets(safe_static_cast<uint32_t>(settings.getNumHashBuckets())),
         _buckets(_arena, _numHashBuckets, NULL),
         _values(_arena, 0),
         _lastGroup(NULL),
@@ -264,6 +264,7 @@ public:
             accumulateStates(_lastState, input);
             return;
         }
+
         uint32_t hash = hashGroup(group, _groupSize) % _numHashBuckets;
         bool newGroup = true;
         bool newHash = true;

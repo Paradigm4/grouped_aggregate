@@ -80,7 +80,6 @@ public:
 
     ArrayDesc inferSchema(vector< ArrayDesc> schemas, shared_ptr< Query> query)
     {
-        size_t const numInstances = query->getInstancesCount();
         grouped_aggregate::Settings settings(schemas[0], _parameters, _kwParameters, query);
         return settings.makeSchema(query, Settings::FINAL, schemas[0].getName());
     }
