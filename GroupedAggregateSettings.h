@@ -107,8 +107,8 @@ static size_t chooseNumBuckets(size_t maxTableSize)
 class Settings
 {
 private:
-    size_t _groupSize;
-    size_t _numAggs;
+    uint32_t _groupSize;
+    uint32_t _numAggs;
     size_t _maxTableSize;
     bool   _maxTableSizeSet;
     size_t _spilloverChunkSize;
@@ -162,7 +162,6 @@ public:
             shared_ptr<OperatorParam> param = operatorParameters[i];
             if (param->getParamType() == PARAM_AGGREGATE_CALL)
             {
-                AttributeID inputAttId;
                 AttributeDesc inputAttDesc;
                 string outputAttName;
                 AggregatePtr agg = resolveAggregate((shared_ptr <OperatorParamAggregateCall> &) param, inputSchema.getAttributes(), &inputAttDesc, &outputAttName);
@@ -286,9 +285,6 @@ private:
 
     void setKeywordParamInt64(KeywordParameters const& kwParams, const char* const kw, bool& alreadySet, size_t& valueToSet)
     {
-        int64_t paramContent;
-        size_t numParams;
-
         if (!alreadySet) {
             Parameter kwParam = getKeywordParam(kwParams, kw);
             if (kwParam) {
@@ -402,7 +398,7 @@ private:
     }
 
 public:
-    size_t getGroupSize() const
+    uint32_t getGroupSize() const
     {
         return _groupSize;
     }
@@ -492,7 +488,7 @@ public:
         return _numHashBucketsSet;
     }
 
-    size_t getNumAggs() const
+    uint32_t getNumAggs() const
     {
         return _numAggs;
     }
@@ -507,7 +503,6 @@ public:
     ArrayDesc makeSchema(shared_ptr< Query> query, SchemaType const type, string const name = "") const
     {
         Attributes outputAttributes;
-        size_t i =0;
         if(type != FINAL)
         {
             outputAttributes.push_back( AttributeDesc("hash",   TID_UINT32,    0, CompressorType::NONE));

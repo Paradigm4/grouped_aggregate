@@ -119,8 +119,9 @@ public:
         {
             _curStates[i].setNull(0);
         }
-        uint32_t break_interval = _settings.getNumHashBuckets() / _numInstances; //XXX:CAN'T DO EASY ROUNDOFF
-        for(size_t i=0; i<_numInstances-1; ++i)
+        uint32_t break_interval = safe_static_cast<uint32_t>(
+            _settings.getNumHashBuckets() / _numInstances); //XXX:CAN'T DO EASY ROUNDOFF
+        for(uint32_t i=0; i<_numInstances-1; ++i)
         {
             _hashBreaks[i] = break_interval * (i+1);
         }
@@ -398,7 +399,7 @@ public:
         SortingAttributeInfos sortingAttributeInfos(settings.getGroupSize() + 1);
         sortingAttributeInfos[0].columnNo = 0;
         sortingAttributeInfos[0].ascent = true;
-        for(size_t g=0; g<settings.getGroupSize(); ++g)
+        for(uint32_t g=0; g<settings.getGroupSize(); ++g)
         {
             sortingAttributeInfos[g+1].columnNo = g+1;
             sortingAttributeInfos[g+1].ascent = true;
@@ -413,7 +414,7 @@ public:
         ArenaPtr operatorArena = this->getArena();
         ArenaPtr hashArena(newArena(Options("").resetting(true).threading(false).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(settings, hashArena);
-        size_t const groupSize = settings.getGroupSize();
+        uint32_t const groupSize = settings.getGroupSize();
         vector<shared_ptr<ConstArrayIterator> > gaiters(groupSize,NULL);
         vector<shared_ptr<ConstChunkIterator> > gciters(groupSize,NULL);
         vector<int64_t> const& groupIds = settings.getGroupIds();
@@ -427,13 +428,15 @@ public:
             }
             else
             {
-                auto aidIter = inputArray->getArrayDesc().getAttributes().find(groupIds[g]);
+                auto aidIter = inputArray->getArrayDesc().getAttributes().find(
+                    safe_static_cast<AttributeID>(groupIds[g]));
                 gaiters[g] = inputArray->getConstIterator( *aidIter );
             }
         }
         if(gaiters[0].get() == 0)
         {   //TODO: also covers the case when the user wants to group by dimensions only
-            AttributeID lastAttrId = inputArray->getArrayDesc().getAttributes().size()-1;
+            AttributeID lastAttrId = safe_static_cast<AttributeID>(
+                inputArray->getArrayDesc().getAttributes().size()-1);
             auto aidIter = inputArray->getArrayDesc().getAttributes().find(lastAttrId);
             gaiters[0] = inputArray->getConstIterator(*aidIter);
         }
@@ -557,12 +560,12 @@ public:
         aht.logStuff();
         auto aidIter = inputArray->getArrayDesc().getAttributes().firstDataAttribute();
         shared_ptr<ConstArrayIterator> haiter(arr->getConstIterator(aidIter));
-        for(size_t g = 0; g<groupSize; ++g)
+        for(uint32_t g = 0; g<groupSize; ++g)
         {
             auto aidIter = arr->getArrayDesc().getAttributes().find(g+1);
             gaiters[g] = arr->getConstIterator(*aidIter);
         }
-        for(size_t a = 0; a<numAggs; ++a)
+        for(uint32_t a = 0; a<numAggs; ++a)
         {
             auto aidIter = arr->getArrayDesc().getAttributes().find(a + groupSize + 1);
             iaiters[a] = arr->getConstIterator(*aidIter);
@@ -655,8 +658,8 @@ public:
 
         MergeWriter<Settings::FINAL> output(settings, query, _schema.getName());
         size_t const numInstances = query->getInstancesCount();
-        size_t const groupSize    = settings.getGroupSize();
-        size_t const numAggs      = settings.getNumAggs();
+        uint32_t const groupSize  = settings.getGroupSize();
+        uint32_t const numAggs    = settings.getNumAggs();
         vector<shared_ptr<ConstArrayIterator> > haiters(numInstances);
         vector<shared_ptr<ConstChunkIterator> > hciters(numInstances);
         vector<shared_ptr<ConstArrayIterator> > gaiters(numInstances * groupSize);
@@ -692,14 +695,14 @@ public:
             else
             {
                 hciters[inst] = haiters[inst]->getChunk().getConstIterator();
-                for(size_t g =0; g<groupSize; ++g)
+                for(uint32_t g =0; g<groupSize; ++g)
                 {
                     auto aidIter = inputArray->getArrayDesc().getAttributes().find(1 + g);
                     gaiters[inst * groupSize + g] = inputArray->getConstIterator(*aidIter);
                     gaiters[inst * groupSize + g]->setPosition(positions[inst]);
                     gciters[inst * groupSize + g] = gaiters[inst * groupSize + g]->getChunk().getConstIterator();
                 }
-                for(size_t a=0; a<numAggs; ++a)
+                for(uint32_t a=0; a<numAggs; ++a)
                 {
                     auto aidIter = inputArray->getArrayDesc().getAttributes().find(1 + groupSize + a);
                     vaiters[inst * numAggs + a] = inputArray->getConstIterator( *aidIter );
