@@ -412,7 +412,7 @@ public:
     shared_ptr<Array> localCondense(shared_ptr<Array>& inputArray, shared_ptr<Query>& query, Settings& settings)
     {
         ArenaPtr operatorArena = this->getArena();
-        ArenaPtr hashArena(newArena(Options("").resetting(true).threading(false).pagesize(8 * 1024 * 1204).parent(operatorArena)));
+        ArenaPtr hashArena(newArena(Options("PhysicalGroupedAggregate::localCondense()").resetting(true).threading(false).pagesize(8 * 1024 * 1204).parent(operatorArena)));
         AggregateHashTable aht(settings, hashArena);
         uint32_t const groupSize = settings.getGroupSize();
         vector<shared_ptr<ConstArrayIterator> > gaiters(groupSize,NULL);
